@@ -1,57 +1,55 @@
 """
-Pydantic Schemas for Student & FaceEmbedding Data Validation.
+Pydantic Schemas for Student Management & Face Registration.
 """
 
-from datetime import datetime
+from pydantic import BaseModel, Field
 from typing import Optional, List
-from pydantic import BaseModel, EmailStr, Field
+from datetime import datetime
 
 
-# ----------------------------------------------------
-# Student Schemas
-# ----------------------------------------------------
-
-class StudentBase(BaseModel):
-    student_id: str = Field(..., example="STU-2026-001", description="Unique student identification string")
-    name: str = Field(..., example="John Doe", description="Full name of the student")
-    email: EmailStr = Field(..., example="john.doe@university.edu", description="Student email address")
-    department: Optional[str] = Field(None, example="Computer Science", description="Academic department")
-    semester: Optional[int] = Field(None, example=6, description="Current semester number")
+class StudentCreate(BaseModel):
+    student_id: str = Field(..., example="STU-001", description="Unique student ID string")
+    name: str = Field(..., example="Alice Johnson", description="Student full name")
+    email: str = Field(..., example="alice@university.edu", description="Student email address")
+    department: Optional[str] = Field("Computer Science", description="Department / Major")
+    semester: Optional[int] = Field(6, description="Current semester")
 
 
-class StudentCreate(StudentBase):
-    """
-    Schema for student registration input.
-    Does NOT contain face embedding.
-    """
-    pass
-
-
-class StudentResponse(StudentBase):
-    """
-    Schema for returning student information.
-    """
+class StudentResponse(BaseModel):
     id: int
+    student_id: str
+    name: str
+    email: str
+    department: Optional[str] = None
+    semester: Optional[int] = None
     created_at: datetime
+    has_face_registered: bool = False
 
     class Config:
         from_attributes = True
 
 
-# ----------------------------------------------------
-# Face Embedding Schemas (Ready for future ArcFace integration)
-# ----------------------------------------------------
-
 class FaceEmbeddingCreate(BaseModel):
-    student_db_id: int = Field(..., description="Database Primary Key (id) of the student")
-    embedding: List[float] = Field(..., description="ArcFace feature embedding float vector")
+    student_id: int
+    embedding: List[float]
 
 
 class FaceEmbeddingResponse(BaseModel):
     id: int
     student_id: int
-    embedding: List[float]
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+
+class FaceRegistrationRequest(BaseModel):
+    student_id: str = Field(..., description="Target student ID string")
+
+
+class FaceRegistrationResponse(BaseModel):
+    status: str = "success"
+    student_id: str
+    message: str
+    embedding_length: int
+    created_at: datetime

@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     # Database Settings
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/edusense_db"
 
+    # Real-Time LiveKit Classroom Settings
+    LIVEKIT_URL: str = "ws://localhost:7880"
+    LIVEKIT_API_KEY: str = "devkey"
+    LIVEKIT_API_SECRET: str = "secret"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

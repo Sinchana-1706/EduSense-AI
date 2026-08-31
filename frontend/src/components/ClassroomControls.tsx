@@ -1,0 +1,47 @@
+import React from 'react';
+import { Mic, MicOff, Video, VideoOff, LogOut } from 'lucide-react';
+
+export interface ClassroomControlsProps {
+  isMicEnabled: boolean;
+  isCameraEnabled: boolean;
+  onToggleMic: () => void;
+  onToggleCamera: () => void;
+  onLeaveRoom: () => void;
+}
+
+export const ClassroomControls: React.FC<ClassroomControlsProps> = ({
+  isMicEnabled,
+  isCameraEnabled,
+  onToggleMic,
+  onToggleCamera,
+  onLeaveRoom,
+}) => {
+  return (
+    <div className="controls-bar">
+      <button
+        className={`control-btn ${!isMicEnabled ? 'muted' : ''}`}
+        onClick={onToggleMic}
+        title={isMicEnabled ? 'Mute Microphone' : 'Unmute Microphone'}
+      >
+        {isMicEnabled ? <Mic size={20} /> : <MicOff size={20} />}
+        <span>{isMicEnabled ? 'Mute Mic' : 'Unmute Mic'}</span>
+      </button>
+
+      <button
+        className={`control-btn ${!isCameraEnabled ? 'off' : ''}`}
+        onClick={onToggleCamera}
+        title={isCameraEnabled ? 'Turn Off Camera' : 'Turn On Camera'}
+      >
+        {isCameraEnabled ? <Video size={20} /> : <VideoOff size={20} />}
+        <span>{isCameraEnabled ? 'Stop Video' : 'Start Video'}</span>
+      </button>
+
+      <button className="control-btn leave-control-btn" onClick={onLeaveRoom} title="Leave Classroom">
+        <LogOut size={20} />
+        <span>Leave Classroom</span>
+      </button>
+    </div>
+  );
+};
+
+export default ClassroomControls;

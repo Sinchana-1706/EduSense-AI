@@ -58,3 +58,6 @@ datasets/*
 *.swo
 .DS_Store
 Thumbs.db
+
+*.db
+backend/edusense.db

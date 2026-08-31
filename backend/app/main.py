@@ -2,12 +2,25 @@
 EduSense AI FastAPI Application Entry Point.
 """
 
+import sys
+import os
 from contextlib import asynccontextmanager
+
+# Ensure project root directory (containing `ai` package) is in Python path
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config.settings import settings
 from app.routers.health import router as health_router
 from app.routers.students import router as students_router
+from app.routers.livekit import router as livekit_router
+from app.routers.attendance import router as attendance_router
+from app.routers.emotion import router as emotion_router
+from app.routers.speech import router as speech_router
+from app.routers.sentiment import router as sentiment_router
 from database.connection import init_db
 
 
@@ -19,9 +32,10 @@ async def lifespan(app: FastAPI):
     """
     try:
         init_db()
-        print("✅ Database connection initialized and tables verified.")
+        print("[DB] Database connection initialized and tables verified.")
     except Exception as e:
-        print(f"⚠️ Database initialization warning (Verify PostgreSQL service is active): {e}")
+        err_msg = str(e).encode("ascii", "ignore").decode("ascii")
+        print(f"[DB Notice] Database initialization notice: {err_msg}")
     yield
 
 
@@ -46,6 +60,11 @@ app.add_middleware(
 # Mount API Routers
 app.include_router(health_router)
 app.include_router(students_router)
+app.include_router(livekit_router)
+app.include_router(attendance_router)
+app.include_router(emotion_router)
+app.include_router(speech_router)
+app.include_router(sentiment_router)
 
 
 @app.get("/", summary="Root Endpoint")
@@ -54,6 +73,11 @@ def read_root():
         "message": f"Welcome to {settings.APP_NAME} Backend API",
         "health_check": "/health",
         "students_api": "/api/v1/students",
+        "livekit_api": "/api/v1/livekit/token",
+        "attendance_api": "/api/v1/attendance",
+        "emotion_api": "/api/v1/emotion",
+        "speech_api": "/api/v1/speech",
+        "sentiment_api": "/api/v1/sentiment",
         "docs": "/docs"
     }
 

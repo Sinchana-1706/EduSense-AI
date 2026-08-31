@@ -1,27 +1,36 @@
 # EduSense AI 🎓🤖
 
-**EduSense AI** is an online classroom analytics system designed to empower educators with real-time insight into student engagement, attendance, facial emotions, speech transcription, and sentiment analysis during live virtual or hybrid classes.
+**EduSense AI** is a smart online classroom analytics system designed to empower educators with real-time insight into student attendance, facial emotion/engagement, speech transcription, and text sentiment analysis during live virtual or hybrid classes.
 
 ---
 
-## 🎯 Project Objectives
+## 🎯 Project Objectives & Implemented Features
 
-1. **Student Attendance**: Face-recognition based automated attendance tracking.
-2. **Facial Emotion Analysis**: Real-time facial expression and mood monitoring (Attentive, Confused, Bored, Neutral, Happy).
-3. **Speech-to-Text**: Automatic speech transcription during lecture sessions (Whisper AI).
-4. **Text Sentiment Analysis**: NLP sentiment and comprehension monitoring on lecture transcripts and chat messages.
-5. **Student Engagement Analytics**: Consolidated multi-modal engagement scoring.
-6. **Teacher Dashboard**: Real-time interactive dashboard for classroom monitoring and post-session insights.
+1. **Objective 1 — Automated Student Attendance**:
+   - **Face Registration**: Administrator/Teacher can upload student face images (`POST /api/v1/students/register-face`). System extracts 128-d/512-d normalized face feature vector embeddings and stores them without retaining raw images.
+   - **Live Recognition & Attendance**: During LiveKit sessions, video frames are processed (`POST /api/v1/attendance/recognize`), faces are detected, and embeddings are matched via Cosine Distance.
+   - **Safety Rules**: Strict cosine distance thresholding ensures unknown faces are safely ignored and not falsely identified as registered students. Multiple checks prevent double-counting in the same session.
+   - **Summary Endpoint**: `GET /api/v1/attendance/session/{session_id}` returns total enrolled, present count, absent count, and attendance percentage.
+
+2. **Objective 2 — Facial Emotion / Engagement Detection**:
+   - **Pretrained Facial Analysis**: Processes face frames (`POST /api/v1/emotion/analyze`) using `DeepFace` expression recognition.
+   - **Classroom Engagement Mapping**: Maps raw facial expressions (`happy`, `surprise`, `neutral`, `fear`, `disgust`, `sad`, `angry`) to classroom categories: `attentive`, `neutral`, `confused`, and `disengaged`.
+   - **Session Analytics**: `GET /api/v1/emotion/session/{session_id}` computes live distribution percentages and overall classroom engagement scores.
+
+3. **Objective 3 — Speech Transcription + Text Sentiment Analysis**:
+   - **Whisper Speech-to-Text**: Converts classroom speech audio chunks (`POST /api/v1/speech/transcribe`) into text transcripts.
+   - **Text Sentiment Pipeline**: Analyzes transcript sentiment (`POST /api/v1/sentiment/analyze`) using `NLTK VADER` into `positive`, `neutral`, or `negative` ratings.
+   - **Session Analytics**: `GET /api/v1/sentiment/session/{session_id}` provides positive/neutral/negative percentage breakdowns and latest transcript logs.
 
 ---
 
 ## 🛠️ Technology Stack
 
-- **Frontend**: React + TypeScript + Vite + CSS3
-- **Backend**: FastAPI + Python 3.10+ + Pydantic
-- **Database**: PostgreSQL (SQLAlchemy ORM prep)
-- **Real-time Streaming**: LiveKit
-- **AI / ML Core**: Python (Modular placeholders for attendance, emotion, speech, and sentiment engines)
+- **Frontend**: React + TypeScript + Vite + CSS3 + LiveKit Client (`livekit-client`)
+- **Backend**: FastAPI + Python 3.11 + Pydantic + PyJWT + SQLAlchemy 2.0 ORM
+- **Database**: PostgreSQL (with automatic zero-setup SQLite fallback)
+- **Real-Time WebRTC Streaming**: LiveKit Server (`livekit-api`)
+- **AI Core Engines**: Pretrained `DeepFace`, `Facenet`, `RetinaFace`, `OpenAI Whisper`, `SpeechRecognition`, `NLTK VADER`
 
 ---
 
@@ -29,123 +38,97 @@
 
 ```text
 EduSense-AI/
-├── frontend/             # React + TypeScript Vite frontend app
+├── frontend/                     # React + TypeScript Vite frontend app
 │   ├── src/
-│   │   ├── components/   # Dashboard & UI components
-│   │   ├── services/     # Backend API integration service
-│   │   ├── App.tsx       # Root App container
-│   │   ├── main.tsx      # React entrypoint
-│   │   └── index.css     # Design system & dark mode styles
+│   │   ├── components/
+│   │   │   ├── Dashboard.tsx     # Teacher Dashboard & real-time polling
+│   │   │   ├── Classroom.tsx     # LiveKit Classroom & canvas frame sampling
+│   │   │   ├── StatsCard.tsx     # Reusable metric card component
+│   │   │   ├── VideoTile.tsx     # WebRTC participant video/audio tile
+│   │   │   ├── ParticipantList.tsx# Roster sidebar
+│   │   │   └── ClassroomControls.tsx # Media control toolbar
+│   │   ├── services/
+│   │   │   └── api.ts            # API service functions for Objectives 1, 2, 3
+│   │   ├── App.tsx               # Root App container
+│   │   ├── main.tsx              # React entrypoint
+│   │   └── index.css             # Glassmorphism design system
 │   ├── index.html
 │   ├── package.json
 │   └── vite.config.ts
-├── backend/              # FastAPI backend API
+├── backend/                      # FastAPI backend API
 │   ├── app/
-│   │   ├── config/       # App settings & environment variables
-│   │   ├── routers/      # API Routers (GET /health)
-│   │   ├── services/     # Core business logic services
-│   │   └── main.py       # FastAPI application entrypoint
+│   │   ├── config/
+│   │   │   └── settings.py       # Pydantic settings
+│   │   ├── routers/
+│   │   │   ├── health.py         # GET /health
+│   │   │   ├── students.py       # POST /api/v1/students/register-face
+│   │   │   ├── livekit.py        # POST /api/v1/livekit/token
+│   │   │   ├── attendance.py     # POST /api/v1/attendance/recognize & GET /session/{id}
+│   │   │   ├── emotion.py        # POST /api/v1/emotion/analyze & GET /session/{id}
+│   │   │   ├── speech.py         # POST /api/v1/speech/transcribe
+│   │   │   └── sentiment.py      # POST /api/v1/sentiment/analyze & GET /session/{id}
+│   │   └── main.py               # FastAPI application entrypoint
+│   ├── test_api_endpoints.py     # Integration unit test suite
 │   └── requirements.txt
-├── ai/                   # Modular AI analytical placeholders
-│   ├── attendance/       # Face recognition attendance module
-│   ├── emotion/          # Facial emotion analysis module
-│   ├── speech/           # Whisper speech-to-text module
-│   └── sentiment/        # Text sentiment analysis module
-├── database/             # Database connection & ORM model base
-│   ├── connection.py     # SQLAlchemy PostgreSQL engine setup
-│   └── base.py           # Declarative base class
-├── models/               # Model weights storage directory (.gitkeep)
-├── datasets/             # Training datasets storage directory (.gitkeep)
-├── docs/                 # Documentation & Architecture diagrams
+├── ai/                           # AI analytical engines
+│   ├── attendance/               # Face embedding extraction & matching engine
+│   ├── emotion/                  # Facial expression & engagement mapping analyzer
+│   ├── speech/                   # Whisper speech-to-text transcriber
+│   └── sentiment/                # NLTK VADER sentiment analyzer
+├── database/                     # SQLAlchemy database models & engine connection
+│   ├── models/
+│   │   ├── student.py            # Student ORM model
+│   │   ├── face_embedding.py     # FaceEmbedding ORM model
+│   │   ├── attendance.py         # AttendanceRecord ORM model
+│   │   ├── emotion.py            # EmotionRecord ORM model
+│   │   ├── speech.py             # SpeechTranscript ORM model
+│   │   └── sentiment.py          # SentimentRecord ORM model
+│   ├── connection.py             # SQLAlchemy engine setup with SQLite fallback
+│   └── base.py                   # Declarative base class
+├── docs/                         # Architecture documentation
 │   └── architecture.md
-├── .env.example          # Environment variable reference
-├── .gitignore            # Git exclusion rules
-└── README.md             # Project documentation
+├── .env                          # Local environment settings
+├── .env.example                  # Environment variable reference
+└── README.md                     # Project documentation
 ```
 
 ---
 
-## 🚀 Getting Started
+## 🚀 Getting Started & Execution
 
-### Prerequisites
+### 1. Setting Up & Running FastAPI Backend
 
-- **Python 3.10+** installed
-- **Node.js 18+** and **npm** installed
+```bash
+cd backend
+# Run server using Python:
+python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+- API Docs: `http://127.0.0.1:8000/docs`
+- Health Check: `http://127.0.0.1:8000/health`
 
----
+### 2. Setting Up & Running React Frontend
 
-### 1. Setting Up & Running the FastAPI Backend
-
-1. Navigate to the backend directory:
-   ```bash
-   cd backend
-   ```
-
-2. Create a virtual environment and activate it:
-   - **Windows (PowerShell):**
-     ```powershell
-     python -m venv venv
-     .\venv\Scripts\Activate.ps1
-     ```
-   - **Linux / macOS:**
-     ```bash
-     python3 -m venv venv
-     source venv/bin/activate
-     ```
-
-3. Install required Python packages:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. Start the FastAPI development server:
-   ```bash
-   uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
-   ```
-
-5. Verify backend health endpoint:
-   Open your browser or run:
-   ```bash
-   curl http://127.0.0.1:8000/health
-   ```
-   *Expected Response:*
-   ```json
-   {
-     "status": "ok",
-     "app_name": "EduSense AI",
-     "message": "Backend service is healthy",
-     "timestamp": "..."
-   }
-   ```
+Open a new terminal window:
+```bash
+cd frontend
+npm install
+npm run dev
+```
+- Access application at `http://localhost:5173`.
 
 ---
 
-### 2. Setting Up & Running the React Frontend
+## 🧪 Automated Testing
 
-1. Open a new terminal and navigate to the frontend directory:
-   ```bash
-   cd frontend
-   ```
+To run the backend integration test suite verifying all 7 endpoints:
 
-2. Install Node dependencies:
-   ```bash
-   npm install
-   ```
+```bash
+cd backend
+python test_api_endpoints.py
+```
 
-3. Start the Vite development server:
-   ```bash
-   npm run dev
-   ```
-
-4. Open the application:
-   Access `http://localhost:5173` in your web browser to view the **EduSense AI Teacher Dashboard**.
-
----
-
-## 📑 Next Steps & Development Roadmap
-
-- [x] **Phase 1**: Clean & Scalable Repository Foundation (Completed)
-- [ ] **Phase 2**: Database schema design & PostgreSQL migration setup (Alembic)
-- [ ] **Phase 3**: LiveKit real-time classroom audio/video WebRTC integration
-- [ ] **Phase 4**: AI Model integration (Face Recognition, Facial Emotion, Whisper Speech-to-Text, Sentiment Analysis)
-- [ ] **Phase 5**: Real-time analytics streaming & teacher dashboard visualizer
+Output:
+```text
+Ran 7 tests in 11.557s
+OK
+```

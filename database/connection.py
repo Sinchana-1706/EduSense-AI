@@ -1,6 +1,6 @@
 """
-PostgreSQL Database Connection Setup for EduSense AI.
-Configures SQLAlchemy engine, session maker, and connection health check helper.
+Database Connection Setup for EduSense AI.
+Configures SQLAlchemy engine, session maker, and resilient connection fallback.
 """
 
 import os
@@ -9,18 +9,37 @@ from sqlalchemy.orm import sessionmaker
 from database.base import Base
 import database.models  # Ensure models are imported for metadata creation
 
-# Read Database URL from environment or use default PostgreSQL connection string
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://postgres:postgres@localhost:5432/edusense_db"
-)
+# Read Database URL from environment or fallback to local SQLite for zero-setup execution
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/edusense_db")
+SQLITE_FALLBACK_URL = "sqlite:///./edusense.db"
 
-# Initialize SQLAlchemy Engine
-engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,
-    echo=False
-)
+
+def _create_db_engine():
+    """
+    Creates SQLAlchemy engine with automatic fallback to SQLite if PostgreSQL service is offline.
+    """
+    try:
+        if "postgresql" in DATABASE_URL:
+            pg_engine = create_engine(DATABASE_URL, pool_pre_ping=True, echo=False)
+            with pg_engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            print("[DB] Successfully connected to PostgreSQL database.")
+            return pg_engine
+    except Exception as e:
+        print(f"[DB Notice] PostgreSQL connection unavailable ({e}). Falling back to local SQLite database.")
+
+    # SQLite Engine Fallback
+    connect_args = {"check_same_thread": False} if "sqlite" in SQLITE_FALLBACK_URL else {}
+    sqlite_engine = create_engine(
+        SQLITE_FALLBACK_URL,
+        connect_args=connect_args,
+        pool_pre_ping=True,
+        echo=False
+    )
+    return sqlite_engine
+
+
+engine = _create_db_engine()
 
 # Configure Session Maker
 SessionLocal = sessionmaker(
@@ -43,7 +62,7 @@ def get_db():
 
 def check_db_connection() -> bool:
     """
-    Helper function to check if PostgreSQL connection is reachable.
+    Helper function to check if database connection is reachable.
     """
     try:
         with engine.connect() as conn:
