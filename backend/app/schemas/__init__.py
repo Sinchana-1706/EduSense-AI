@@ -26,6 +26,12 @@ from app.schemas.speech import (
     SentimentAnalyzeResponse,
     SentimentSessionSummary,
 )
+from app.schemas.classroom import (
+    ClassroomCreate,
+    ClassroomResponse,
+    StudentJoinRequest,
+    StudentJoinResponse,
+)
 
 __all__ = [
     "StudentCreate",
@@ -45,4 +51,8 @@ __all__ = [
     "SentimentAnalyzeRequest",
     "SentimentAnalyzeResponse",
     "SentimentSessionSummary",
+    "ClassroomCreate",
+    "ClassroomResponse",
+    "StudentJoinRequest",
+    "StudentJoinResponse",
 ]

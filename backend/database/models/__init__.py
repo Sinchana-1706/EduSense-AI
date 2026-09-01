@@ -9,6 +9,7 @@ from database.models.attendance import AttendanceRecord
 from database.models.emotion import EmotionRecord
 from database.models.speech import SpeechTranscript
 from database.models.sentiment import SentimentRecord
+from database.models.classroom import Classroom
 
 __all__ = [
     "Base",
@@ -18,4 +19,5 @@ __all__ = [
     "EmotionRecord",
     "SpeechTranscript",
     "SentimentRecord",
+    "Classroom",
 ]

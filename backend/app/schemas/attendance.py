@@ -24,12 +24,18 @@ class AttendanceRecordResponse(BaseModel):
 
 class AttendanceRecognizeResponse(BaseModel):
     status: str = "success"
+    recognized: bool = False
+    student_id: Optional[str] = None
+    student_name: Optional[str] = "Unknown"
+    confidence: float = 0.0
+    attendance: str = "not_marked"
     session_id: str
     room_name: str
-    recognized_count: int
-    new_attendance_marked: int
-    unknown_count: int
-    recognized_students: List[AttendanceRecordResponse]
+    timestamp: str
+    recognized_count: int = 0
+    new_attendance_marked: int = 0
+    unknown_count: int = 0
+    recognized_students: List[AttendanceRecordResponse] = []
 
 
 class AttendanceSessionSummary(BaseModel):

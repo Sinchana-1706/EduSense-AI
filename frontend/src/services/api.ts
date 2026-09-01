@@ -107,6 +107,8 @@ export async function requestLiveKitToken(
       body: JSON.stringify({
         room_name: roomName,
         identity: identity,
+        participant_name: identity,
+        role: isTeacher ? 'teacher' : 'student',
         is_teacher: isTeacher,
       }),
     });
@@ -139,16 +141,23 @@ export async function registerStudentFace(
   if (email) formData.append('email', email);
   formData.append('file', imageBlob, 'face.jpg');
 
-  const response = await fetch(`${API_BASE_URL}/api/v1/students/register-face`, {
-    method: 'POST',
-    body: formData,
-  });
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/v1/students/register-face`, {
+      method: 'POST',
+      body: formData,
+    });
 
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err.detail || 'Failed to register student face.');
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || 'Failed to register student face.');
+    }
+    return await response.json();
+  } catch (error: any) {
+    if (error.name === 'TypeError' || error.message.includes('fetch')) {
+      throw new Error('Failed to connect to backend server. Ensure FastAPI is running on port 8000 (cd backend && python -m uvicorn app.main:app --reload).');
+    }
+    throw error;
   }
-  return await response.json();
 }
 
 /**
@@ -277,3 +286,85 @@ export async function fetchSentimentSummary(sessionId: string): Promise<Sentimen
   }
   return await response.json();
 }
+
+export interface ClassroomData {
+  classroom_id: number;
+  room_name: string;
+  subject: string | null;
+  teacher_name: string;
+  join_code: string;
+  join_url: string;
+  livekit_room_name: string;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface StudentJoinResponseData {
+  classroom: ClassroomData;
+  token: string;
+  livekit_url: string;
+  student_id: string;
+  student_name: string;
+}
+
+/**
+ * OBJECTIVE 2: Create Online Classroom API
+ */
+export async function createClassroom(
+  roomName: string,
+  teacherName: string,
+  subject?: string
+): Promise<ClassroomData> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/classrooms`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      room_name: roomName,
+      teacher_name: teacherName,
+      subject: subject || null,
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to create classroom.');
+  }
+  return await response.json();
+}
+
+/**
+ * OBJECTIVE 2: Get Classroom Details by Join Code API
+ */
+export async function getClassroomByCode(joinCode: string): Promise<ClassroomData> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/classrooms/${encodeURIComponent(joinCode)}`);
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.detail || 'Classroom not found or inactive.');
+  }
+  return await response.json();
+}
+
+/**
+ * OBJECTIVE 2: Join Classroom as Student API
+ */
+export async function joinClassroomByCode(
+  joinCode: string,
+  studentId: string,
+  studentName: string
+): Promise<StudentJoinResponseData> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/classrooms/${encodeURIComponent(joinCode)}/join`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      student_id: studentId,
+      student_name: studentName,
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to join classroom.');
+  }
+  return await response.json();
+}
+

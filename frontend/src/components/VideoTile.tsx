@@ -30,6 +30,19 @@ export const VideoTile: React.FC<VideoTileProps> = ({
     setIsMicEnabled(participant.isMicrophoneEnabled);
     setIsCameraEnabled(participant.isCameraEnabled);
 
+    const attachTracks = () => {
+      participant.trackPublications.forEach((publication) => {
+        if (publication.track) {
+          if (publication.kind === Track.Kind.Video && videoRef.current) {
+            publication.track.attach(videoRef.current);
+            setHasVideoTrack(true);
+          } else if (publication.kind === Track.Kind.Audio && audioRef.current && !isLocal) {
+            publication.track.attach(audioRef.current);
+          }
+        }
+      });
+    };
+
     const handleTrackSubscribed = (
       publication: RemoteTrackPublication | LocalTrackPublication
     ) => {
@@ -57,21 +70,13 @@ export const VideoTile: React.FC<VideoTileProps> = ({
     const handleMuteChanged = () => {
       setIsMicEnabled(participant.isMicrophoneEnabled);
       setIsCameraEnabled(participant.isCameraEnabled);
+      attachTracks();
     };
 
-    // Attach existing published tracks
-    participant.trackPublications.forEach((publication) => {
-      if (publication.track) {
-        if (publication.kind === Track.Kind.Video && videoRef.current) {
-          publication.track.attach(videoRef.current);
-          setHasVideoTrack(true);
-        } else if (publication.kind === Track.Kind.Audio && audioRef.current && !isLocal) {
-          publication.track.attach(audioRef.current);
-        }
-      }
-    });
+    // Attach existing published tracks immediately
+    attachTracks();
 
-    // Subscribe to track events on this participant using ParticipantEvent enum
+    // Subscribe to participant events using ParticipantEvent enum
     participant.on(ParticipantEvent.TrackSubscribed, (_track, publication) => {
       handleTrackSubscribed(publication as any);
     });
@@ -80,10 +85,24 @@ export const VideoTile: React.FC<VideoTileProps> = ({
       handleTrackUnsubscribed(publication as any);
     });
 
+    participant.on(ParticipantEvent.LocalTrackPublished, () => {
+      attachTracks();
+    });
+
     participant.on(ParticipantEvent.TrackMuted, handleMuteChanged);
     participant.on(ParticipantEvent.TrackUnmuted, handleMuteChanged);
 
+    // Periodic check to ensure video element remains attached
+    const interval = setInterval(() => {
+      setIsMicEnabled(participant.isMicrophoneEnabled);
+      setIsCameraEnabled(participant.isCameraEnabled);
+      if (participant.isCameraEnabled && !hasVideoTrack) {
+        attachTracks();
+      }
+    }, 1500);
+
     return () => {
+      clearInterval(interval);
       participant.trackPublications.forEach((pub) => {
         if (pub.track) {
           pub.track.detach();

@@ -55,22 +55,35 @@ async def register_student_face(
         db.add(student)
         db.commit()
         db.refresh(student)
+    else:
+        if name and name.strip():
+            student.name = name.strip()
+        if email and email.strip():
+            student.email = email.strip()
+        if department:
+            student.department = department
+        db.commit()
 
-    # Extract 128-d / 512-d feature vector embedding using AttendanceEngine
+    # Extract 128-d feature vector embedding using AttendanceEngine (DeepFace / Facenet)
     embedding_vector = attendance_engine.extract_face_embedding(image_bytes)
     if not embedding_vector:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Could not detect or extract face embedding from the provided image. Ensure the face is clearly visible."
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No valid human face detected in the uploaded image. Please upload a clear, front-facing face photo."
         )
 
-    # Save embedding vector in FaceEmbedding table
-    face_record = FaceEmbedding(
-        student_id=student.id,
-        embedding=embedding_vector,
-        created_at=datetime.utcnow()
-    )
-    db.add(face_record)
+    # Save or update embedding vector in FaceEmbedding table (prevent duplicate rows for same student)
+    face_record = db.query(FaceEmbedding).filter(FaceEmbedding.student_id == student.id).first()
+    if face_record:
+        face_record.embedding = embedding_vector
+        face_record.created_at = datetime.utcnow()
+    else:
+        face_record = FaceEmbedding(
+            student_id=student.id,
+            embedding=embedding_vector,
+            created_at=datetime.utcnow()
+        )
+        db.add(face_record)
     db.commit()
 
     return FaceRegistrationResponse(

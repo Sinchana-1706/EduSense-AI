@@ -1,8 +1,8 @@
 """
-FastAPI Router for Automated Student Attendance & Recognition.
+FastAPI Router for Automated Student Attendance & Face Recognition.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
 from sqlalchemy.orm import Session
@@ -22,15 +22,16 @@ router = APIRouter(prefix="/api/v1/attendance", tags=["Automated Attendance"])
 
 @router.post("/recognize", response_model=AttendanceRecognizeResponse, summary="Recognize Student Face & Mark Attendance")
 async def recognize_attendance(
-    session_id: str = Form("CS-101", description="Classroom session ID"),
+    session_id: str = Form("CS-101", description="Classroom session ID / join code"),
     room_name: str = Form("CS-101", description="Classroom room name"),
     file: UploadFile = File(..., description="Classroom video frame image file"),
     db: Session = Depends(get_db),
 ):
     """
     Processes video frame snapshot from LiveKit classroom, detects faces,
-    compares embeddings against registered student database, and marks attendance.
-    Enforces strict thresholding to avoid false positives on unknown faces.
+    compares embeddings against registered student database using Cosine Distance thresholding,
+    and marks attendance as PRESENT for matched registered students.
+    Prevents duplicate attendance records for the same student + session.
     """
     frame_bytes = await file.read()
     if not frame_bytes:
@@ -40,14 +41,41 @@ async def recognize_attendance(
     face_records = db.query(FaceEmbedding).all()
     registered_list = []
     for r in face_records:
-        registered_list.append((r.student_id, r.embedding))
+        if r.embedding and isinstance(r.embedding, list) and len(r.embedding) > 0:
+            registered_list.append((r.student_id, r.embedding))
 
-    # Process frame through AttendanceEngine
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # If no registered embeddings exist in database, return unknown immediately
+    if not registered_list:
+        return AttendanceRecognizeResponse(
+            status="success",
+            recognized=False,
+            student_id=None,
+            student_name="Unknown",
+            confidence=0.0,
+            attendance="not_marked",
+            session_id=session_id,
+            room_name=room_name,
+            timestamp=now_iso,
+            recognized_count=0,
+            new_attendance_marked=0,
+            unknown_count=1,
+            recognized_students=[]
+        )
+
+    # Process frame through AttendanceEngine (strict DeepFace face detection + thresholding)
     recognized_faces = attendance_engine.process_frame(frame_bytes, registered_list)
 
     new_attendance_count = 0
     unknown_count = 0
     recognized_records: List[AttendanceRecordResponse] = []
+
+    primary_recognized = False
+    primary_student_id: Optional[str] = None
+    primary_student_name: Optional[str] = "Unknown"
+    primary_confidence: float = 0.0
+    primary_attendance: str = "not_marked"
 
     for match in recognized_faces:
         matched_student_db_id = match.get("student_id")
@@ -56,7 +84,12 @@ async def recognize_attendance(
         if matched_student_db_id is not None:
             student = db.query(Student).filter(Student.id == matched_student_db_id).first()
             if student:
-                # Check if attendance is already recorded for this session
+                primary_recognized = True
+                primary_student_id = student.student_id
+                primary_student_name = student.name
+                primary_confidence = confidence
+
+                # Check if attendance is already recorded for this student + session (prevent duplicates)
                 existing = (
                     db.query(AttendanceRecord)
                     .filter(
@@ -73,33 +106,41 @@ async def recognize_attendance(
                         room_name=room_name,
                         status="PRESENT",
                         confidence=confidence,
-                        timestamp=datetime.utcnow()
+                        timestamp=datetime.now(timezone.utc)
                     )
                     db.add(existing)
                     db.commit()
                     db.refresh(existing)
                     new_attendance_count += 1
+                    primary_attendance = "present"
+                else:
+                    primary_attendance = "already_marked"
 
-                recognized_records.append(
-                    AttendanceRecordResponse(
-                        id=existing.id,
-                        student_id=student.id,
-                        student_id_code=student.student_id,
-                        student_name=student.name,
-                        session_id=existing.session_id,
-                        room_name=existing.room_name,
-                        status=existing.status,
-                        confidence=existing.confidence,
-                        timestamp=existing.timestamp
-                    )
+                record_resp = AttendanceRecordResponse(
+                    id=existing.id,
+                    student_id=student.id,
+                    student_id_code=student.student_id,
+                    student_name=student.name,
+                    session_id=existing.session_id,
+                    room_name=existing.room_name,
+                    status=existing.status,
+                    confidence=existing.confidence,
+                    timestamp=existing.timestamp
                 )
+                recognized_records.append(record_resp)
         else:
             unknown_count += 1
 
     return AttendanceRecognizeResponse(
         status="success",
+        recognized=primary_recognized,
+        student_id=primary_student_id,
+        student_name=primary_student_name,
+        confidence=primary_confidence,
+        attendance=primary_attendance,
         session_id=session_id,
         room_name=room_name,
+        timestamp=now_iso,
         recognized_count=len(recognized_records),
         new_attendance_marked=new_attendance_count,
         unknown_count=unknown_count,

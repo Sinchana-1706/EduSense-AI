@@ -5,7 +5,7 @@ SQLAlchemy AttendanceRecord database model.
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database.models.student import Base
 
@@ -15,6 +15,9 @@ if TYPE_CHECKING:
 
 class AttendanceRecord(Base):
     __tablename__ = "attendance_records"
+    __table_args__ = (
+        UniqueConstraint("student_id", "session_id", name="uq_student_session_attendance"),
+    )
 
     id: Mapped[int] = mapped_column(
         Integer,
