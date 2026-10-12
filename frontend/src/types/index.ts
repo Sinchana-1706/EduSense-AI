@@ -118,6 +118,24 @@ export interface FaceVerificationResponse {
   } | null;
 }
 
+export interface EmotionPredictionItem {
+  student_id?: string | null;
+  student_name?: string | null;
+  expression: string;
+  confidence: number;
+  all_scores?: Record<string, number> | null;
+  bbox?: number[] | null;
+}
+
+export interface EmotionDetectionResponse {
+  success: boolean;
+  message: string;
+  predictions: EmotionPredictionItem[];
+  dominant_expression?: string | null;
+  model_name: string;
+  disclaimer: string;
+}
+
 export interface AttendanceVerificationResponse {
   verified: boolean;
   reason: string;
@@ -127,7 +145,9 @@ export interface AttendanceVerificationResponse {
   samples_required: number;
   first_verified_at?: string | null;
   last_verified_at?: string | null;
+  facial_emotion?: EmotionPredictionItem | null;
 }
+
 
 export interface AttendanceRecordResponse {
   id: string;
@@ -171,6 +191,58 @@ export interface TeacherAttendanceSummaryResponse {
   total_classrooms: number;
   total_sessions_conducted: number;
   overall_attendance_rate: number;
+}
+
+export interface AudioDiagnostics {
+  byte_size: number;
+  duration_seconds: number;
+  sample_rate: number;
+  channel_count: number;
+  sample_count: number;
+  peak_amplitude: number;
+  rms_amplitude: number;
+  is_all_zeros: boolean;
+  is_silent: boolean;
+}
+
+// Phase 4: Speech-to-Text & Vocal Emotion Recognition
+export interface TranscriptionResult {
+  text: string;
+  language?: string | null;
+  language_probability?: number | null;
+  duration_seconds: number;
+  status: string;
+  error_message?: string | null;
+}
+
+export interface VocalEmotionResult {
+  expression?: string | null;
+  confidence: number;
+  all_scores?: Record<string, number> | null;
+}
+
+export interface SpeechAnalysisResponse {
+  success: boolean;
+  status?: string;
+  session_id: string;
+  participant_id: string;
+  participant_name: string;
+  transcription: TranscriptionResult;
+  vocal_emotion?: VocalEmotionResult | null;
+  duration_seconds: number;
+  timestamp: string;
+  diagnostics?: AudioDiagnostics | null;
+  error?: string | null;
+}
+
+export interface SpeechTranscriptItem {
+  id: string;
+  participant_id: string;
+  participant_name: string;
+  text: string;
+  language?: string | null;
+  vocal_emotion?: VocalEmotionResult | null;
+  timestamp: number;
 }
 
 

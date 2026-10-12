@@ -13,8 +13,10 @@ from app.models.enums import UserRole, SessionStatus, AttendanceStatus
 from app.models.session import ClassSession, SessionParticipant
 from app.models.profile import StudentProfile, TeacherProfile
 from app.models.classroom import Classroom
-from app.models.stubs import FaceEmbedding, AttendanceRecord, AuditLog
+from app.models.stubs import FaceEmbedding, AttendanceRecord, AuditLog, FacialAnalysis
 from app.services.face_service import FaceService
+from app.services.emotion_service import EmotionService
+from app.schemas.emotion import EmotionPredictionItem
 from app.schemas.attendance import (
     AttendanceVerificationRequest,
     AttendanceVerificationResponse,
@@ -40,6 +42,14 @@ def get_status_str(status_val: Any) -> str:
     if hasattr(status_val, "value"):
         return str(status_val.value)
     return str(status_val)
+
+
+def ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 @router.post(
@@ -151,6 +161,35 @@ def verify_attendance(
 
     now_utc = datetime.now(timezone.utc)
 
+    # 7. Facial Emotion Recognition via EmotiEffLib (Extracted whenever face bbox is present)
+    facial_emotion_pred = None
+    try:
+        if eval_result.get("bbox"):
+            decoded_img = service.decode_base64_image(payload.image_base64)
+            face_crop = service.extract_face_crop(decoded_img, eval_result["bbox"])
+            emotion_res = EmotionService.get_instance().predict_emotion_from_crop(face_crop)
+            if emotion_res:
+                facial_emotion_pred = EmotionPredictionItem(
+                    student_id=str(student_profile.id),
+                    student_name=current_user.full_name,
+                    expression=emotion_res["expression"],
+                    confidence=emotion_res["confidence"],
+                    all_scores=emotion_res.get("all_scores"),
+                    bbox=eval_result.get("bbox"),
+                )
+                # Store interval observation in FacialAnalysis table
+                facial_entry = FacialAnalysis(
+                    session_id=payload.session_id,
+                    student_id=student_profile.id,
+                    sampled_at=now_utc,
+                    dominant_emotion=emotion_res["expression"],
+                )
+                db.add(facial_entry)
+                db.commit()
+                logger.info(f"[EMOTION] Logged facial expression '{emotion_res['expression']}' (conf: {emotion_res['confidence']}) for student {student_profile.id}")
+    except Exception as em_err:
+        logger.warning(f"[EMOTION] Non-fatal emotion inference warning: {em_err}")
+
     # Case: Single frame evaluation failed (No face, Multi face, Low quality, Mismatch)
     if not eval_result["matched"]:
         confirmed_count = existing_record.verification_count if existing_record else 0
@@ -170,6 +209,7 @@ def verify_attendance(
             samples_required=CONFIRMATION_SAMPLES_REQUIRED,
             first_verified_at=first_verified,
             last_verified_at=last_verified,
+            facial_emotion=facial_emotion_pred,
         )
         logger.info(f"[ATTENDANCE DEBUG] response: {resp_fail.model_dump_json()}")
         return resp_fail
@@ -200,22 +240,21 @@ def verify_attendance(
         record.last_verified_at = now_utc
 
         # Calculate presence duration in seconds
-        if record.first_verified_at and record.last_verified_at:
-            duration = int((record.last_verified_at - record.first_verified_at).total_seconds())
+        first_v = ensure_utc(record.first_verified_at)
+        last_v = ensure_utc(record.last_verified_at)
+        if first_v and last_v:
+            duration = int((last_v - first_v).total_seconds())
             record.presence_duration_seconds = max(0, duration)
 
     # Temporal Confirmation Check: Require 3 verified samples to transition from UNVERIFIED -> PRESENT / LATE
     rec_status_str = get_status_str(record.status)
     if record.verification_count >= CONFIRMATION_SAMPLES_REQUIRED and not record.is_manually_corrected:
         if rec_status_str in ("UNVERIFIED", "ABSENT"):
-            session_start = session_obj.actual_start_time or session_obj.scheduled_start_time or session_obj.created_at
-            # Make sure session_start is timezone aware
-            if session_start.tzinfo is None:
-                session_start = session_start.replace(tzinfo=timezone.utc)
-
+            session_start = ensure_utc(session_obj.actual_start_time or session_obj.scheduled_start_time or session_obj.created_at)
             late_cutoff = session_start + timedelta(minutes=LATE_THRESHOLD_MINUTES)
+            first_v = ensure_utc(record.first_verified_at)
 
-            if record.first_verified_at <= late_cutoff:
+            if first_v <= late_cutoff:
                 record.status = AttendanceStatus.PRESENT
                 msg = "Attendance verified and marked PRESENT"
             else:
@@ -246,9 +285,11 @@ def verify_attendance(
         samples_required=CONFIRMATION_SAMPLES_REQUIRED,
         first_verified_at=first_verified_str,
         last_verified_at=last_verified_str,
+        facial_emotion=facial_emotion_pred,
     )
     logger.info(f"[ATTENDANCE DEBUG] response: {resp_success.model_dump_json()}")
     return resp_success
+
 
 
 @router.get(

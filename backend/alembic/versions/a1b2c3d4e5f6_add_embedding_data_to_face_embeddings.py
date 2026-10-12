@@ -17,7 +17,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     op.add_column('face_embeddings', sa.Column('embedding_data', sa.JSON(), nullable=True))
-    op.add_column('face_embeddings', sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False))
+    op.add_column('face_embeddings', sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False))
 
 
 def downgrade() -> None:

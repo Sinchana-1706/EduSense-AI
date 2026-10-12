@@ -59,6 +59,27 @@ class Settings(BaseSettings):
     FACE_CONSISTENCY_THRESHOLD: float = 0.40
     FACE_RECOGNITION_SIMILARITY_THRESHOLD: float = 0.50
 
+    # Facial Emotion Recognition (EmotiEffLib)
+    EMOTION_MODEL_NAME: str = "enet_b0_8_best_vgaf"
+    EMOTION_INFERENCE_ENGINE: str = "onnx"
+    EMOTION_DEVICE: str = "cpu"
+
+    # Speech-to-Text Transcription (faster-whisper)
+    WHISPER_MODEL_SIZE: str = "base"
+    WHISPER_DEVICE: str = "cpu"
+    WHISPER_COMPUTE_TYPE: str = "int8"
+
+    # Vocal Emotion Recognition (SpeechBrain IEMOCAP)
+    SPEECHBRAIN_EMOTION_MODEL: str = "speechbrain/emotion-recognition-wav2vec2-IEMOCAP"
+    SPEECHBRAIN_DEVICE: str = "cpu"
+    SPEECHBRAIN_SAVEDIR: str = str(BACKEND_DIR / "pretrained_models" / "speechbrain" / "emotion-recognition-wav2vec2-IEMOCAP")
+
+    # Audio Limits & Privacy
+    AUDIO_MAX_UPLOAD_SIZE_MB: int = 10
+    AUDIO_MAX_DURATION_SECONDS: float = 60.0
+    AUDIO_MIN_DURATION_SECONDS: float = 0.5
+    TRANSCRIPT_RETENTION_ENABLED: bool = True
+
     model_config = SettingsConfigDict(
         env_file=[str(BACKEND_DIR / ".env"), str(ROOT_DIR / ".env"), ".env"],
         env_file_encoding="utf-8",

@@ -10,6 +10,13 @@ from app.models.enums import UserRole
 from app.models.stubs import FaceEmbedding
 from app.models.profile import StudentProfile
 from app.services.face_service import FaceService
+from app.services.emotion_service import EmotionService
+from app.schemas.emotion import (
+    EmotionDetectionRequest,
+    EmotionDetectionResponse,
+    EmotionPredictionItem,
+    AvailableModelsResponse,
+)
 from app.schemas.face import (
     FaceCaptureRequest,
     FaceCaptureResponse,
@@ -282,4 +289,109 @@ def verify_student_face(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to process verification request. Please try again.",
         )
+
+
+@router.post(
+    "/emotion",
+    response_model=EmotionDetectionResponse,
+    summary="Detect visible facial expression using EmotiEffLib",
+)
+def detect_facial_emotion(
+    payload: EmotionDetectionRequest,
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """
+    Receives an image frame (base64).
+    Detects faces using SCRFD detector and extracts visible facial expression predictions
+    using the EmotiEffLib pretrained model on CPU.
+    Associates student identity only if user is an authenticated student.
+    Returns real softmax confidence scores and visible expression labels.
+    """
+    try:
+        face_service = FaceService.get_instance()
+        image = face_service.decode_base64_image(payload.image_base64)
+    except ValueError as ve:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(ve),
+        )
+    except Exception as e:
+        logger.error(f"Error decoding image in emotion detection: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid image format or encoding",
+        )
+
+    emotion_service = EmotionService.get_instance()
+    if not emotion_service.is_loaded:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Facial emotion recognition service is currently unavailable",
+        )
+
+    faces = face_service.detect_faces(image)
+    if not faces:
+        return EmotionDetectionResponse(
+            success=False,
+            message="No faces detected in the provided image frame.",
+            predictions=[],
+            dominant_expression=None,
+            model_name=emotion_service.model_name,
+        )
+
+    raw_preds = emotion_service.process_image_emotions(image, faces=faces)
+    if not raw_preds:
+        return EmotionDetectionResponse(
+            success=False,
+            message="Faces detected but could not extract valid facial crops.",
+            predictions=[],
+            dominant_expression=None,
+            model_name=emotion_service.model_name,
+        )
+
+    prediction_items: List[EmotionPredictionItem] = []
+    student_id = str(current_user.student_profile.id) if current_user.student_profile else None
+    student_name = current_user.full_name if current_user.student_profile else None
+
+    highest_conf_pred = max(raw_preds, key=lambda p: p.get("confidence", 0.0))
+
+    for pred in raw_preds:
+        is_primary = (len(raw_preds) == 1) or (pred == highest_conf_pred)
+        prediction_items.append(
+            EmotionPredictionItem(
+                student_id=student_id if is_primary else None,
+                student_name=student_name if is_primary else None,
+                expression=pred["expression"],
+                confidence=pred["confidence"],
+                all_scores=pred.get("all_scores"),
+                bbox=pred.get("bbox"),
+            )
+        )
+
+    return EmotionDetectionResponse(
+        success=True,
+        message=f"Successfully analyzed {len(prediction_items)} face(s).",
+        predictions=prediction_items,
+        dominant_expression=highest_conf_pred.get("expression"),
+        model_name=emotion_service.model_name,
+    )
+
+
+@router.get(
+    "/emotion/models",
+    response_model=AvailableModelsResponse,
+    summary="List available EmotiEffLib facial expression models",
+)
+def get_available_emotion_models(
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """
+    Returns the list of supported EmotiEffLib models and the currently active model.
+    """
+    emotion_service = EmotionService.get_instance()
+    return AvailableModelsResponse(
+        models=emotion_service.get_available_models(),
+        current_model=emotion_service.model_name,
+    )
+
 

@@ -2,6 +2,7 @@ import uuid
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 from app.models.enums import AttendanceStatus
+from app.schemas.emotion import EmotionPredictionItem
 
 
 class AttendanceVerificationRequest(BaseModel):
@@ -21,6 +22,7 @@ class AttendanceVerificationResponse(BaseModel):
     samples_required: int = Field(3, description="Total consecutive matching samples required for confirmation")
     first_verified_at: Optional[str] = Field(None, description="ISO timestamp of first successful face verification")
     last_verified_at: Optional[str] = Field(None, description="ISO timestamp of most recent face verification")
+    facial_emotion: Optional[EmotionPredictionItem] = Field(None, description="Predicted facial expression for verified face")
 
 
 class AttendanceRecordResponse(BaseModel):

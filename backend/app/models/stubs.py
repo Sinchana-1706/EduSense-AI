@@ -1,8 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import String, Float, Integer, Text, DateTime, Enum, ForeignKey, JSON, Boolean, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import String, Float, Integer, Text, DateTime, Enum, ForeignKey, JSON, Boolean, func, Uuid as UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import Base
@@ -129,6 +128,14 @@ class SpeechAnalysis(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     speech_emotion: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    emotion_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    transcript: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    detected_language: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    duration_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # Relationships
+    session: Mapped["ClassSession"] = relationship("ClassSession")
+    participant: Mapped["SessionParticipant"] = relationship("SessionParticipant")
 
 
 class SentimentAnalysis(Base):

@@ -44,3 +44,17 @@ temp_faces/
 face_samples/
 .insightface/
 
+# LiveKit standalone binary
+livekit-bin/
+
+
+# Downloaded pretrained model weights and Hugging Face cache
+backend/pretrained_models/
+backend/wav2vec2_checkpoints/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+
+
+

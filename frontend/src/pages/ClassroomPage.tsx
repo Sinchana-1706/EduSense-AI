@@ -15,8 +15,18 @@ import {
   type TrackReference,
 } from '@livekit/components-react';
 import { Track, ConnectionState, Participant, RoomEvent } from 'livekit-client';
-import { sessionApi, classroomApi, attendanceApi } from '../services/api';
-import type { JoinSessionResponse, ChatMessage, Classroom, ClassSession, AttendanceVerificationResponse } from '../types';
+import { sessionApi, classroomApi, attendanceApi, emotionApi, speechApi } from '../services/api';
+import type {
+  JoinSessionResponse,
+  ChatMessage,
+  Classroom,
+  ClassSession,
+  AttendanceVerificationResponse,
+  EmotionPredictionItem,
+  VocalEmotionResult,
+  SpeechTranscriptItem,
+} from '../types';
+import { AudioChunkRecorder } from '../utils/audioRecorder';
 import { StudentAttendanceStatusBadge } from '../components/StudentAttendanceStatusBadge';
 import { TeacherAttendanceModal } from '../components/TeacherAttendanceModal';
 import {
@@ -34,7 +44,53 @@ import {
   AlertCircle,
   RefreshCw,
   Volume2,
+  FileText,
 } from 'lucide-react';
+
+export const getEmotionEmoji = (expression?: string | null): string => {
+  if (!expression) return '👤';
+  switch (expression.toLowerCase()) {
+    case 'happiness':
+      return '😊';
+    case 'surprise':
+      return '😲';
+    case 'neutral':
+      return '😐';
+    case 'sadness':
+      return '🙁';
+    case 'fear':
+      return '😨';
+    case 'disgust':
+      return '😣';
+    case 'anger':
+      return '😠';
+    case 'contempt':
+      return '😒';
+    default:
+      return '👤';
+  }
+};
+
+export const getVocalEmotionBadge = (vocal?: VocalEmotionResult | null) => {
+  if (!vocal || !vocal.expression) return null;
+  const label = vocal.expression.toLowerCase();
+  let emoji = '🎙️';
+  let color = 'text-slate-300 border-slate-700 bg-slate-900/80';
+  if (label === 'happiness') {
+    emoji = '😊';
+    color = 'text-emerald-300 border-emerald-500/40 bg-emerald-950/80';
+  } else if (label === 'neutral') {
+    emoji = '🎙️';
+    color = 'text-sky-300 border-sky-500/40 bg-sky-950/80';
+  } else if (label === 'anger') {
+    emoji = '⚡';
+    color = 'text-rose-300 border-rose-500/40 bg-rose-950/80';
+  } else if (label === 'sadness') {
+    emoji = '🌧️';
+    color = 'text-amber-300 border-amber-500/40 bg-amber-950/80';
+  }
+  return { label: vocal.expression, confidence: vocal.confidence, emoji, color };
+};
 
 export const ClassroomPage: React.FC = () => {
   const { sessionId } = useParams<{ sessionId: string }>();
@@ -186,7 +242,7 @@ const ClassroomInner: React.FC<ClassroomInnerProps> = ({ joinData, classroom, se
   const room = useRoomContext();
   const connectionState = useConnectionState();
   const participants = useParticipants();
-  const { localParticipant } = useLocalParticipant();
+  const { localParticipant, isMicrophoneEnabled, microphoneTrack } = useLocalParticipant();
   const { canPlayAudio, startAudio } = useAudioPlayback();
 
   const isTeacher = joinData.role === 'TEACHER';
@@ -206,16 +262,67 @@ const ClassroomInner: React.FC<ClassroomInnerProps> = ({ joinData, classroom, se
   const [isVerifyingAttendance, setIsVerifyingAttendance] = useState(false);
   const isVerifyingRef = useRef(false);
 
-  // Periodic Face Attendance Sampling Effect (Student camera ON)
+  // Facial emotion recognition state across participants
+  const [participantEmotions, setParticipantEmotions] = useState<Record<string, EmotionPredictionItem>>({});
+
+  // Phase 4: Speech-to-Text & Vocal Emotion Recognition states
+  const [showSpeechPanel, setShowSpeechPanel] = useState(false);
+  const [transcripts, setTranscripts] = useState<SpeechTranscriptItem[]>([]);
+  const [participantVocalEmotions, setParticipantVocalEmotions] = useState<Record<string, VocalEmotionResult>>({});
+  const [isProcessingSpeech, setIsProcessingSpeech] = useState(false);
+  const isProcessingSpeechRef = useRef(false);
+  const audioRecorderRef = useRef<AudioChunkRecorder | null>(null);
+  const speechIntervalRef = useRef<any>(null);
+  const transcriptBottomRef = useRef<HTMLDivElement>(null);
+
+  // Real-time speech audio pipeline diagnostic state
+  const [speechLiveStatus, setSpeechLiveStatus] = useState<{
+    state: 'idle' | 'recording' | 'analyzing' | 'success' | 'no_speech' | 'silent' | 'invalid_audio' | 'auth_error' | 'inference_error' | 'suspended' | 'error';
+    lastChunkTime?: number;
+    lastChunkSeconds?: number;
+    lastTranscript?: string;
+    lastVocalEmotion?: string;
+    errorMessage?: string;
+    peakAmp?: number;
+    rmsAmp?: number;
+  }>({
+    state: 'idle',
+  });
+
+  // Global user interaction listener: Automatically unpauses AudioContext on first user click/keypress
   useEffect(() => {
-    if (isTeacher || !isCamOn || !sessionId) return;
+    const handleUserInteraction = () => {
+      if (audioRecorderRef.current) {
+        audioRecorderRef.current.resume().then((isRunning) => {
+          if (isRunning) {
+            setSpeechLiveStatus((prev) => (prev.state === 'suspended' ? { ...prev, state: 'recording' } : prev));
+          }
+        });
+      }
+    };
+    window.addEventListener('click', handleUserInteraction, { passive: true });
+    window.addEventListener('keydown', handleUserInteraction, { passive: true });
+    return () => {
+      window.removeEventListener('click', handleUserInteraction);
+      window.removeEventListener('keydown', handleUserInteraction);
+    };
+  }, []);
+
+  // Sync isMicOn with LiveKit's reactive isMicrophoneEnabled
+  useEffect(() => {
+    setIsMicOn(isMicrophoneEnabled);
+  }, [isMicrophoneEnabled]);
+
+  // Periodic Face Attendance & Emotion Sampling Effect (Camera ON)
+  useEffect(() => {
+    if (!isCamOn || !sessionId) return;
 
     const captureAndVerifyFrame = async () => {
       if (isVerifyingRef.current) return; // Debounce / Throttling
 
-      // Sample base64 image from local student video DOM element
+      // Sample base64 image from local video DOM element
       const allVideos = Array.from(document.querySelectorAll('video'));
-      // Prefer local participant video element to avoid sampling remote teacher/student video
+      // Prefer local participant video element to avoid sampling remote participants
       const targetVideo = allVideos.find(v =>
         v.closest('[data-lk-local-participant="true"]') !== null ||
         v.getAttribute('data-lk-local-participant') === 'true' ||
@@ -241,33 +348,151 @@ const ClassroomInner: React.FC<ClassroomInnerProps> = ({ joinData, classroom, se
 
       if (!sampleB64) return;
 
+      const broadcastEmotion = (emotionItem: EmotionPredictionItem) => {
+        if (!localParticipant) return;
+        setParticipantEmotions((prev) => ({
+          ...prev,
+          [localParticipant.identity]: emotionItem,
+        }));
+
+        if (room) {
+          try {
+            const emotionPayload = JSON.stringify({
+              type: 'EMOTION_UPDATE',
+              identity: localParticipant.identity,
+              emotion: emotionItem,
+            });
+            room.localParticipant.publishData(new TextEncoder().encode(emotionPayload), { reliable: false }).catch(() => {});
+          } catch {
+            // Non-blocking failure isolation
+          }
+        }
+      };
+
       try {
         isVerifyingRef.current = true;
-        setIsVerifyingAttendance(true);
 
-        const res = await attendanceApi.verifyAttendance(sessionId, sampleB64);
-        console.log('[ATTENDANCE DEBUG] response:', res);
-        console.log('[ATTENDANCE DEBUG] frontend sample count:', res?.samples_confirmed);
-        setAttendanceData(res);
+        if (!isTeacher) {
+          setIsVerifyingAttendance(true);
+          try {
+            const res = await attendanceApi.verifyAttendance(sessionId, sampleB64);
+            setAttendanceData(res);
+            if (res?.facial_emotion) {
+              broadcastEmotion(res.facial_emotion);
+            } else {
+              // Student attendance verified/checked but without facial_emotion (e.g. unenrolled student)
+              try {
+                const emoRes = await emotionApi.detectEmotion(sampleB64);
+                if (emoRes?.dominant_expression && emoRes.predictions?.length) {
+                  const primaryPred = emoRes.predictions[0];
+                  broadcastEmotion({
+                    student_id: joinData.participant_identity,
+                    student_name: joinData.participant_name,
+                    expression: emoRes.dominant_expression,
+                    confidence: primaryPred.confidence,
+                    all_scores: primaryPred.all_scores,
+                    bbox: primaryPred.bbox,
+                  });
+                } else {
+                  broadcastEmotion({
+                    student_id: joinData.participant_identity,
+                    student_name: joinData.participant_name,
+                    expression: 'Face not detected',
+                    confidence: 0,
+                  });
+                }
+              } catch {
+                broadcastEmotion({
+                  student_id: joinData.participant_identity,
+                  student_name: joinData.participant_name,
+                  expression: 'Emotion unavailable',
+                  confidence: 0,
+                });
+              }
+            }
+          } catch (attendErr) {
+            console.warn('[ATTENDANCE SAMPLER] Attendance verify warning, falling back to direct emotion API:', attendErr);
+            // Fallback: analyze emotion directly if attendance endpoint had an issue
+            try {
+              const emoRes = await emotionApi.detectEmotion(sampleB64);
+              if (emoRes?.dominant_expression && emoRes.predictions?.length) {
+                const primaryPred = emoRes.predictions[0];
+                broadcastEmotion({
+                  student_id: joinData.participant_identity,
+                  student_name: joinData.participant_name,
+                  expression: emoRes.dominant_expression,
+                  confidence: primaryPred.confidence,
+                  all_scores: primaryPred.all_scores,
+                  bbox: primaryPred.bbox,
+                });
+              } else {
+                broadcastEmotion({
+                  student_id: joinData.participant_identity,
+                  student_name: joinData.participant_name,
+                  expression: 'Face not detected',
+                  confidence: 0,
+                });
+              }
+            } catch {
+              broadcastEmotion({
+                student_id: joinData.participant_identity,
+                student_name: joinData.participant_name,
+                expression: 'Emotion unavailable',
+                confidence: 0,
+              });
+            }
+          } finally {
+            setIsVerifyingAttendance(false);
+          }
+        } else {
+          // Teacher path: analyze teacher's facial expressions directly
+          try {
+            const emoRes = await emotionApi.detectEmotion(sampleB64);
+            if (emoRes?.dominant_expression && emoRes.predictions?.length) {
+              const primaryPred = emoRes.predictions[0];
+              broadcastEmotion({
+                student_id: joinData.participant_identity,
+                student_name: joinData.participant_name,
+                expression: emoRes.dominant_expression,
+                confidence: primaryPred.confidence,
+                all_scores: primaryPred.all_scores,
+                bbox: primaryPred.bbox,
+              });
+            } else {
+              broadcastEmotion({
+                student_id: joinData.participant_identity,
+                student_name: joinData.participant_name,
+                expression: 'Face not detected',
+                confidence: 0,
+              });
+            }
+          } catch {
+            broadcastEmotion({
+              student_id: joinData.participant_identity,
+              student_name: joinData.participant_name,
+              expression: 'Emotion unavailable',
+              confidence: 0,
+            });
+          }
+        }
       } catch (err) {
         // Non-blocking failure isolation: Log silently, never break LiveKit stream
-        console.warn('[ATTENDANCE SAMPLER] Periodic verification check non-fatal warning:', err);
+        console.warn('[EMOTION SAMPLER] Periodic check non-fatal warning:', err);
       } finally {
         isVerifyingRef.current = false;
-        setIsVerifyingAttendance(false);
       }
     };
 
-    // Initial check after 2s
-    const timeout = setTimeout(captureAndVerifyFrame, 2000);
-    // Periodic interval every 10s
-    const interval = setInterval(captureAndVerifyFrame, 10000);
+    // Initial check after 1.5s
+    const timeout = setTimeout(captureAndVerifyFrame, 1500);
+    // Periodic interval every 3.5s for responsive real-time feedback
+    const interval = setInterval(captureAndVerifyFrame, 3500);
 
     return () => {
       clearTimeout(timeout);
       clearInterval(interval);
     };
-  }, [isTeacher, isCamOn, sessionId]);
+  }, [isTeacher, isCamOn, sessionId, room, localParticipant, joinData]);
 
   // Sync initial media states with localParticipant & ensure microphone is active
   useEffect(() => {
@@ -287,12 +512,216 @@ const ClassroomInner: React.FC<ClassroomInnerProps> = ({ joinData, classroom, se
     }
   }, [localParticipant]);
 
+  // Phase 4: Periodic Microphone Audio Capture & Analysis Effect (Whisper STT & SpeechBrain)
+  useEffect(() => {
+    if (!isMicrophoneEnabled || !sessionId || !localParticipant) {
+      if (audioRecorderRef.current) {
+        audioRecorderRef.current.stopAndGetBlob();
+        audioRecorderRef.current = null;
+      }
+      setSpeechLiveStatus({ state: 'idle' });
+      return;
+    }
+
+    let isUnmounted = false;
+    let fallbackMediaStream: MediaStream | null = null;
+
+    const startRecordingAndSampling = async () => {
+      try {
+        const liveMediaTrack =
+          (microphoneTrack?.track as any)?.mediaStreamTrack ||
+          localParticipant.getTrackPublication(Track.Source.Microphone)?.track?.mediaStreamTrack;
+
+        let stream: MediaStream | null = null;
+        if (liveMediaTrack && liveMediaTrack.readyState === 'live') {
+          stream = new MediaStream([liveMediaTrack]);
+          console.log('[SPEECH RECORDER] Attached to live LiveKit microphone track:', liveMediaTrack.label);
+        } else {
+          try {
+            console.log('[SPEECH RECORDER] LiveKit microphone track not yet ready, trying getUserMedia fallback...');
+            fallbackMediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            stream = fallbackMediaStream;
+          } catch (gumErr: any) {
+            console.warn('[SPEECH RECORDER] getUserMedia fallback warning:', gumErr);
+            if (!isUnmounted) {
+              setSpeechLiveStatus({
+                state: 'error',
+                errorMessage: gumErr?.message || 'Microphone access denied or unavailable',
+              });
+            }
+            return;
+          }
+        }
+
+        if (!stream || isUnmounted) return;
+
+        const recorder = new AudioChunkRecorder(16000);
+        await recorder.start(stream);
+        audioRecorderRef.current = recorder;
+
+        const initStatus = recorder.getStatus();
+        if (initStatus.contextState === 'suspended') {
+          setSpeechLiveStatus({ state: 'suspended' });
+        } else {
+          setSpeechLiveStatus({ state: 'recording' });
+        }
+
+        // Sample audio every 5.5 seconds
+        speechIntervalRef.current = setInterval(async () => {
+          if (isUnmounted || !isMicrophoneEnabled || isProcessingSpeechRef.current) return;
+
+          // Check if AudioContext was suspended
+          const currentStatus = recorder.getStatus();
+          if (currentStatus.contextState === 'suspended') {
+            await recorder.resume();
+            if (recorder.getStatus().contextState === 'suspended') {
+              setSpeechLiveStatus((prev) => ({ ...prev, state: 'suspended' }));
+              return;
+            }
+          }
+
+          const chunkBlob = recorder.getChunkAndReset();
+          const diag = recorder.getLastDiagnostics();
+          // WAV header is 44 bytes; 16kHz 16-bit mono is 32000 B/s. Require at least ~0.5s audio
+          if (!chunkBlob || chunkBlob.size < 16000) {
+            return;
+          }
+
+          try {
+            isProcessingSpeechRef.current = true;
+            setIsProcessingSpeech(true);
+            setSpeechLiveStatus((prev) => ({
+              ...prev,
+              state: 'analyzing',
+              peakAmp: diag?.peakAmplitude,
+              rmsAmp: diag?.rmsAmplitude,
+            }));
+
+            const result = await speechApi.analyzeSpeech(sessionId, chunkBlob);
+
+            if (isUnmounted) return;
+
+            const hasSpeech = Boolean(result.transcription?.text && result.transcription.text.trim());
+            const hasVocalEmotion = Boolean(result.vocal_emotion?.expression);
+
+            // 1. Process Transcription
+            if (hasSpeech) {
+              const newTranscriptItem: SpeechTranscriptItem = {
+                id: `${Date.now()}_${Math.random()}`,
+                participant_id: localParticipant.identity,
+                participant_name: joinData.participant_name,
+                text: result.transcription.text,
+                language: result.transcription.language,
+                vocal_emotion: result.vocal_emotion,
+                timestamp: Date.now(),
+              };
+
+              setTranscripts((prev) => [...prev, newTranscriptItem]);
+            }
+
+            // 2. Process Vocal Emotion
+            if (hasVocalEmotion && localParticipant) {
+              setParticipantVocalEmotions((prev) => ({
+                ...prev,
+                [localParticipant.identity]: result.vocal_emotion!,
+              }));
+            }
+
+            const txStatus = result.transcription?.status || result.status;
+            let mappedState: 'success' | 'no_speech' | 'silent' | 'inference_error' | 'recording' = 'recording';
+            if (txStatus === 'success' || hasSpeech) {
+              mappedState = 'success';
+            } else if (txStatus === 'silent') {
+              mappedState = 'silent';
+            } else if (txStatus === 'no_speech') {
+              mappedState = 'no_speech';
+            } else if (txStatus === 'inference_error') {
+              mappedState = 'inference_error';
+            }
+
+            setSpeechLiveStatus({
+              state: mappedState,
+              lastChunkTime: Date.now(),
+              lastChunkSeconds: result.duration_seconds,
+              lastTranscript: result.transcription?.text || undefined,
+              lastVocalEmotion: result.vocal_emotion?.expression || undefined,
+              peakAmp: result.diagnostics?.peak_amplitude ?? diag?.peakAmplitude,
+              rmsAmp: result.diagnostics?.rms_amplitude ?? diag?.rmsAmplitude,
+              errorMessage: result.transcription?.error_message || undefined,
+            });
+
+            // 3. Broadcast to all peers via LiveKit Data Channel
+            if (room && (hasSpeech || hasVocalEmotion)) {
+              try {
+                const speechPayload = JSON.stringify({
+                  type: 'SPEECH_UPDATE',
+                  identity: localParticipant.identity,
+                  participantName: joinData.participant_name,
+                  transcript: result.transcription?.text || '',
+                  detectedLanguage: result.transcription?.language || null,
+                  vocalEmotion: result.vocal_emotion || null,
+                  timestamp: Date.now(),
+                });
+                room.localParticipant.publishData(
+                  new TextEncoder().encode(speechPayload),
+                  { reliable: true }
+                ).catch(() => {});
+              } catch (broadcastErr) {
+                console.warn('[SPEECH BROADCAST ERROR]', broadcastErr);
+              }
+            }
+          } catch (analysisErr: any) {
+            console.warn('[SPEECH ANALYSIS ERROR]', analysisErr);
+            if (!isUnmounted) {
+              setSpeechLiveStatus({
+                state: 'error',
+                errorMessage: analysisErr?.message || 'Failed to analyze speech chunk',
+              });
+            }
+          } finally {
+            if (!isUnmounted) {
+              isProcessingSpeechRef.current = false;
+              setIsProcessingSpeech(false);
+            }
+          }
+        }, 5500);
+      } catch (err: any) {
+        console.warn('[SPEECH RECORDER INITIALIZATION ERROR]', err);
+        if (!isUnmounted) {
+          setSpeechLiveStatus({
+            state: 'error',
+            errorMessage: err?.message || 'Failed to start speech recorder',
+          });
+        }
+      }
+    };
+
+    startRecordingAndSampling();
+
+    return () => {
+      isUnmounted = true;
+      if (speechIntervalRef.current) {
+        clearInterval(speechIntervalRef.current);
+        speechIntervalRef.current = null;
+      }
+      if (audioRecorderRef.current) {
+        audioRecorderRef.current.stopAndGetBlob();
+        audioRecorderRef.current = null;
+      }
+      if (fallbackMediaStream) {
+        fallbackMediaStream.getTracks().forEach((t) => t.stop());
+      }
+      isProcessingSpeechRef.current = false;
+      setIsProcessingSpeech(false);
+    };
+  }, [isMicrophoneEnabled, microphoneTrack, sessionId, localParticipant, room, joinData]);
+
   // Chat state (Data Channel)
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputMessage, setInputMessage] = useState('');
   const chatBottomRef = useRef<HTMLDivElement>(null);
 
-  // Listen for LiveKit Data Messages (Real-time chat & End session events)
+  // Listen for LiveKit Data Messages (Real-time chat, emotions, speech & End session events)
   useEffect(() => {
     if (!room) return;
 
@@ -311,6 +740,36 @@ const ClassroomInner: React.FC<ClassroomInnerProps> = ({ joinData, classroom, se
             timestamp: eventData.timestamp || Date.now(),
           };
           setMessages((prev) => [...prev, newMsg]);
+        } else if (eventData.type === 'EMOTION_UPDATE') {
+          if (eventData.identity && eventData.emotion) {
+            setParticipantEmotions((prev) => ({
+              ...prev,
+              [eventData.identity]: eventData.emotion,
+            }));
+          }
+        } else if (eventData.type === 'SPEECH_UPDATE') {
+          if (eventData.identity) {
+            if (eventData.transcript && eventData.transcript.trim()) {
+              setTranscripts((prev) => [
+                ...prev,
+                {
+                  id: `${Date.now()}_${Math.random()}`,
+                  participant_id: eventData.identity,
+                  participant_name: eventData.participantName || eventData.identity,
+                  text: eventData.transcript,
+                  language: eventData.detectedLanguage,
+                  vocal_emotion: eventData.vocalEmotion,
+                  timestamp: eventData.timestamp || Date.now(),
+                },
+              ]);
+            }
+            if (eventData.vocalEmotion) {
+              setParticipantVocalEmotions((prev) => ({
+                ...prev,
+                [eventData.identity]: eventData.vocalEmotion,
+              }));
+            }
+          }
         } else if (eventData.type === 'SESSION_ENDED') {
           alert('The instructor has ended this live class session.');
           room.disconnect();
@@ -351,6 +810,11 @@ const ClassroomInner: React.FC<ClassroomInnerProps> = ({ joinData, classroom, se
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Auto-scroll speech transcripts
+  useEffect(() => {
+    transcriptBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [transcripts]);
+
   // Media Controls
   const toggleMicrophone = async () => {
     if (!localParticipant) return;
@@ -358,9 +822,158 @@ const ClassroomInner: React.FC<ClassroomInnerProps> = ({ joinData, classroom, se
       const newState = !isMicOn;
       await localParticipant.setMicrophoneEnabled(newState);
       setIsMicOn(newState);
+      if (newState) {
+        audioRecorderRef.current?.resume();
+      }
     } catch (err: any) {
       console.error('Microphone toggle error:', err);
       alert(`Microphone error: ${err.message || 'Failed to toggle microphone. Check browser permissions.'}`);
+    }
+  };
+
+  // Immediate live microphone speech analysis test trigger (records 2.5 seconds of live audio)
+  const handleTestSpeechSample = async () => {
+    if (!sessionId) return;
+    try {
+      setIsProcessingSpeech(true);
+      setSpeechLiveStatus((prev) => ({ ...prev, state: 'analyzing' }));
+
+      // Ensure AudioContext is running
+      await audioRecorderRef.current?.resume();
+
+      // Clear any stale buffered audio and record fresh live mic input for 2.5 seconds
+      audioRecorderRef.current?.getChunkAndReset();
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+
+      const chunkBlob = audioRecorderRef.current?.getChunkAndReset();
+      const diag = audioRecorderRef.current?.getLastDiagnostics();
+
+      if (!chunkBlob || chunkBlob.size < 4000) {
+        throw new Error('Microphone did not produce audio data. Check mic permissions and ensure microphone is active.');
+      }
+
+      console.log(`[SPEECH TEST] Live mic recorded 2.5s (${chunkBlob.size} bytes, peak=${diag?.peakAmplitude?.toFixed(4)}, rms=${diag?.rmsAmplitude?.toFixed(6)}). Sending to /api/speech/analyze...`);
+      const result = await speechApi.analyzeSpeech(sessionId, chunkBlob);
+      console.log('[SPEECH TEST RESULT]', result);
+
+      const hasSpeech = Boolean(result.transcription?.text && result.transcription.text.trim());
+      const hasVocalEmotion = Boolean(result.vocal_emotion?.expression);
+
+      if (hasSpeech) {
+        setTranscripts((prev) => [
+          ...prev,
+          {
+            id: `${Date.now()}_${Math.random()}`,
+            participant_id: localParticipant?.identity || 'local',
+            participant_name: joinData.participant_name,
+            text: result.transcription.text,
+            language: result.transcription.language,
+            vocal_emotion: result.vocal_emotion,
+            timestamp: Date.now(),
+          },
+        ]);
+      }
+
+      if (hasVocalEmotion && localParticipant) {
+        setParticipantVocalEmotions((prev) => ({
+          ...prev,
+          [localParticipant.identity]: result.vocal_emotion!,
+        }));
+      }
+
+      const txStatus = result.transcription?.status || result.status;
+      let mappedState: 'success' | 'no_speech' | 'silent' | 'inference_error' = 'no_speech';
+      if (txStatus === 'success' || hasSpeech) {
+        mappedState = 'success';
+      } else if (txStatus === 'silent') {
+        mappedState = 'silent';
+      } else if (txStatus === 'inference_error') {
+        mappedState = 'inference_error';
+      }
+
+      setSpeechLiveStatus({
+        state: mappedState,
+        lastChunkTime: Date.now(),
+        lastChunkSeconds: result.duration_seconds,
+        lastTranscript: result.transcription?.text || undefined,
+        lastVocalEmotion: result.vocal_emotion?.expression || undefined,
+        peakAmp: result.diagnostics?.peak_amplitude ?? diag?.peakAmplitude,
+        rmsAmp: result.diagnostics?.rms_amplitude ?? diag?.rmsAmplitude,
+        errorMessage: result.transcription?.error_message || undefined,
+      });
+    } catch (err: any) {
+      console.error('[SPEECH TEST ERROR]', err);
+      setSpeechLiveStatus({
+        state: 'error',
+        errorMessage: err?.message || 'Failed test audio sample',
+      });
+      alert(`Audio Test Error: ${err.message || 'Failed to analyze sample'}`);
+    } finally {
+      setIsProcessingSpeech(false);
+    }
+  };
+
+  // Pre-recorded human speech benchmark test (/benchmark_speech.wav)
+  const handleBenchmarkSpeechTest = async () => {
+    if (!sessionId) return;
+    try {
+      setIsProcessingSpeech(true);
+      setSpeechLiveStatus((prev) => ({ ...prev, state: 'analyzing' }));
+
+      const res = await fetch('/benchmark_speech.wav');
+      if (!res.ok) {
+        throw new Error(`Failed to load /benchmark_speech.wav (status ${res.status})`);
+      }
+      const blob = await res.blob();
+      console.log(`[BENCHMARK TEST] Sending benchmark audio (${blob.size} bytes) to /api/speech/analyze...`);
+      const result = await speechApi.analyzeSpeech(sessionId, blob);
+      console.log('[BENCHMARK TEST RESULT]', result);
+
+      const hasSpeech = Boolean(result.transcription?.text && result.transcription.text.trim());
+      const hasVocalEmotion = Boolean(result.vocal_emotion?.expression);
+
+      if (hasSpeech) {
+        setTranscripts((prev) => [
+          ...prev,
+          {
+            id: `${Date.now()}_${Math.random()}`,
+            participant_id: localParticipant?.identity || 'local',
+            participant_name: `${joinData.participant_name} [Benchmark]`,
+            text: result.transcription.text,
+            language: result.transcription.language,
+            vocal_emotion: result.vocal_emotion,
+            timestamp: Date.now(),
+          },
+        ]);
+      }
+
+      if (hasVocalEmotion && localParticipant) {
+        setParticipantVocalEmotions((prev) => ({
+          ...prev,
+          [localParticipant.identity]: result.vocal_emotion!,
+        }));
+      }
+
+      const txStatus = result.transcription?.status || result.status;
+      setSpeechLiveStatus({
+        state: txStatus === 'success' || hasSpeech ? 'success' : 'no_speech',
+        lastChunkTime: Date.now(),
+        lastChunkSeconds: result.duration_seconds,
+        lastTranscript: result.transcription?.text || undefined,
+        lastVocalEmotion: result.vocal_emotion?.expression || undefined,
+        peakAmp: result.diagnostics?.peak_amplitude,
+        rmsAmp: result.diagnostics?.rms_amplitude,
+        errorMessage: result.transcription?.error_message || undefined,
+      });
+    } catch (err: any) {
+      console.error('[BENCHMARK TEST ERROR]', err);
+      setSpeechLiveStatus({
+        state: 'error',
+        errorMessage: err?.message || 'Failed benchmark audio test',
+      });
+      alert(`Benchmark Test Error: ${err.message || 'Failed to analyze benchmark audio'}`);
+    } finally {
+      setIsProcessingSpeech(false);
     }
   };
 
@@ -611,11 +1224,23 @@ const ClassroomInner: React.FC<ClassroomInnerProps> = ({ joinData, classroom, se
         <div className="flex items-center gap-4">
           {/* Attendance Status Badge / Roster Button */}
           {!isTeacher ? (
-            <StudentAttendanceStatusBadge
-              isCamOn={isCamOn}
-              isVerifying={isVerifyingAttendance}
-              attendanceData={attendanceData}
-            />
+            <div className="flex items-center gap-2">
+              <StudentAttendanceStatusBadge
+                isCamOn={isCamOn}
+                isVerifying={isVerifyingAttendance}
+                attendanceData={attendanceData}
+              />
+              {attendanceData?.facial_emotion && (
+                <div
+                  className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-slate-950/80 border border-indigo-500/30 rounded-xl text-xs shadow"
+                  title={`Visible Expression: ${attendanceData.facial_emotion.expression} (${Math.round(attendanceData.facial_emotion.confidence * 100)}% confidence). Approximate visible indicator.`}
+                >
+                  <span>{getEmotionEmoji(attendanceData.facial_emotion.expression)}</span>
+                  <span className="font-semibold text-white">{attendanceData.facial_emotion.expression}</span>
+                  <span className="text-[10px] text-indigo-300 font-mono">({Math.round(attendanceData.facial_emotion.confidence * 100)}%)</span>
+                </div>
+              )}
+            </div>
           ) : (
             <button
               onClick={() => setShowTeacherAttendanceModal(true)}
@@ -682,7 +1307,13 @@ const ClassroomInner: React.FC<ClassroomInnerProps> = ({ joinData, classroom, se
               {/* Strip of small participant tiles */}
               <div className="h-32 flex gap-3 overflow-x-auto pb-2">
                 {participants.map((p) => (
-                  <ParticipantTile key={p.sid} participant={p} compact />
+                  <ParticipantTile
+                    key={p.sid}
+                    participant={p}
+                    compact
+                    emotion={participantEmotions[p.identity]}
+                    vocalEmotion={participantVocalEmotions[p.identity]}
+                  />
                 ))}
               </div>
             </div>
@@ -702,7 +1333,12 @@ const ClassroomInner: React.FC<ClassroomInnerProps> = ({ joinData, classroom, se
               }`}
             >
               {participants.map((p) => (
-                <ParticipantTile key={p.sid} participant={p} />
+                <ParticipantTile
+                  key={p.sid}
+                  participant={p}
+                  emotion={participantEmotions[p.identity]}
+                  vocalEmotion={participantVocalEmotions[p.identity]}
+                />
               ))}
             </div>
           )}
@@ -732,6 +1368,9 @@ const ClassroomInner: React.FC<ClassroomInnerProps> = ({ joinData, classroom, se
                 const isAudioMuted = !p.isMicrophoneEnabled || (micPub ? micPub.isMuted : true);
                 const isVideoMuted = !p.isCameraEnabled || (camPub ? camPub.isMuted : true);
                 const isSelf = p.isLocal;
+                const pEmotion = participantEmotions[p.identity];
+                const pVocal = participantVocalEmotions[p.identity];
+                const pVocalInfo = getVocalEmotionBadge(pVocal);
 
                 return (
                   <div
@@ -747,6 +1386,23 @@ const ClassroomInner: React.FC<ClassroomInnerProps> = ({ joinData, classroom, se
                           <span>{p.name || p.identity}</span>
                           {isSelf && (
                             <span className="text-[10px] text-slate-400 font-normal">(You)</span>
+                          )}
+                        </div>
+                        <div className="flex items-center flex-wrap gap-1.5 mt-0.5">
+                          {pEmotion && (
+                            <div className="text-[10px] text-indigo-300 flex items-center gap-1" title="Approximate visible facial expression">
+                              <span>{getEmotionEmoji(pEmotion.expression)}</span>
+                              <span>{pEmotion.expression}</span>
+                              {pEmotion.confidence > 0 && (
+                                <span className="text-slate-500 font-mono">({Math.round(pEmotion.confidence * 100)}%)</span>
+                              )}
+                            </div>
+                          )}
+                          {pVocalInfo && (
+                            <div className={`text-[9px] px-1.5 py-0.2 rounded border flex items-center gap-1 ${pVocalInfo.color}`} title="SpeechBrain acoustic vocal tone">
+                              <span>{pVocalInfo.emoji}</span>
+                              <span className="capitalize">{pVocalInfo.label}</span>
+                            </div>
                           )}
                         </div>
                       </div>
@@ -828,6 +1484,234 @@ const ClassroomInner: React.FC<ClassroomInnerProps> = ({ joinData, classroom, se
             </form>
           </aside>
         )}
+
+        {/* RIGHT DRAWER: SPEECH & AUDIO ANALYSIS */}
+        {showSpeechPanel && (
+          <aside className="w-88 sm:w-96 bg-slate-900 border-l border-slate-800 flex flex-col z-10 shrink-0">
+            <div className="p-4 border-b border-slate-800 flex items-center justify-between">
+              <h3 className="font-bold text-white text-sm flex items-center gap-2">
+                <FileText className="w-4 h-4 text-indigo-400" />
+                <span>Live Speech & Audio Analysis</span>
+              </h3>
+              <div className="flex items-center gap-2">
+                {isProcessingSpeech && (
+                  <span className="flex items-center gap-1.5 text-[11px] text-indigo-400 bg-indigo-950/80 px-2.5 py-0.5 rounded-full border border-indigo-800 animate-pulse">
+                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
+                    Analyzing
+                  </span>
+                )}
+                <button
+                  onClick={() => setShowSpeechPanel(false)}
+                  className="text-slate-400 hover:text-white text-sm"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {/* Academic Notice Banner */}
+            <div className="px-4 py-2 bg-indigo-950/40 border-b border-indigo-900/40 text-[11px] text-indigo-200/80 leading-relaxed flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
+              <span>
+                <strong>Academic Notice:</strong> Transcripts and vocal tone metrics are automated assistive features. Acoustic predictions reflect statistical audio patterns and should not be used as psychological judgments.
+              </span>
+            </div>
+
+            {/* Live Audio Status Banner */}
+            {!isMicOn ? (
+              <div className="px-4 py-2 bg-amber-950/40 border-b border-amber-900/40 text-[11px] text-amber-200 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <MicOff className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Microphone is muted. Unmute to record speech.</span>
+                </div>
+                <button
+                  onClick={toggleMicrophone}
+                  className="px-2 py-0.5 bg-amber-600 hover:bg-amber-500 text-white rounded text-[10px] font-medium"
+                >
+                  Unmute
+                </button>
+              </div>
+            ) : speechLiveStatus.state === 'suspended' ? (
+              <div className="px-4 py-2 bg-indigo-950/50 border-b border-indigo-800/50 text-[11px] text-indigo-200 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>AudioContext paused by browser.</span>
+                </div>
+                <button
+                  onClick={() => audioRecorderRef.current?.resume()}
+                  className="px-2 py-0.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[10px] font-medium"
+                >
+                  Resume Audio
+                </button>
+              </div>
+            ) : speechLiveStatus.state === 'analyzing' ? (
+              <div className="px-4 py-2 bg-indigo-950/40 border-b border-indigo-900/40 text-[11px] text-indigo-300 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping"></span>
+                  <span>Analyzing speech chunk (Whisper + SpeechBrain)...</span>
+                </div>
+                {speechLiveStatus.peakAmp !== undefined && (
+                  <span className="font-mono text-[10px] text-indigo-400">
+                    Peak: {speechLiveStatus.peakAmp.toFixed(3)}
+                  </span>
+                )}
+              </div>
+            ) : speechLiveStatus.state === 'success' ? (
+              <div className="px-4 py-2 bg-emerald-950/50 border-b border-emerald-800/60 text-[11px] text-emerald-300 flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                  <span className="font-medium">Speech transcribed</span>
+                </div>
+                <div className="flex items-center gap-2 font-mono text-[10px] text-emerald-400">
+                  {speechLiveStatus.peakAmp !== undefined && <span>Peak: {speechLiveStatus.peakAmp.toFixed(3)}</span>}
+                  {speechLiveStatus.rmsAmp !== undefined && <span>RMS: {speechLiveStatus.rmsAmp.toFixed(4)}</span>}
+                </div>
+              </div>
+            ) : speechLiveStatus.state === 'no_speech' ? (
+              <div className="px-4 py-2 bg-slate-900/80 border-b border-slate-800 text-[11px] text-slate-300 flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                  <span>Audio received (No speech detected)</span>
+                </div>
+                <div className="flex items-center gap-2 font-mono text-[10px] text-slate-400">
+                  {speechLiveStatus.peakAmp !== undefined && <span>Peak: {speechLiveStatus.peakAmp.toFixed(3)}</span>}
+                  {speechLiveStatus.rmsAmp !== undefined && <span>RMS: {speechLiveStatus.rmsAmp.toFixed(4)}</span>}
+                </div>
+              </div>
+            ) : speechLiveStatus.state === 'silent' ? (
+              <div className="px-4 py-2 bg-slate-950/60 border-b border-slate-800 text-[11px] text-slate-400 flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-500"></span>
+                  <span>Mic active. Last 5s: Silence / Background noise</span>
+                </div>
+                <div className="flex items-center gap-2 font-mono text-[10px] text-slate-500">
+                  {speechLiveStatus.peakAmp !== undefined && <span>Peak: {speechLiveStatus.peakAmp.toFixed(3)}</span>}
+                  {speechLiveStatus.rmsAmp !== undefined && <span>RMS: {speechLiveStatus.rmsAmp.toFixed(5)}</span>}
+                </div>
+              </div>
+            ) : speechLiveStatus.state === 'inference_error' ? (
+              <div className="px-4 py-2 bg-amber-950/50 border-b border-amber-800 text-[11px] text-amber-300 flex items-center gap-1.5">
+                <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                <span className="truncate">Inference notice: {speechLiveStatus.errorMessage || 'Engine fallback'}</span>
+              </div>
+            ) : speechLiveStatus.state === 'recording' ? (
+              <div className="px-4 py-2 bg-slate-950/60 border-b border-slate-800 text-[11px] text-emerald-300 flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span>Microphone active & listening (Sampling every 5.5s)</span>
+              </div>
+            ) : speechLiveStatus.state === 'error' ? (
+              <div className="px-4 py-2 bg-rose-950/40 border-b border-rose-900/40 text-[11px] text-rose-300 flex items-center gap-1.5">
+                <AlertCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                <span className="truncate">Error: {speechLiveStatus.errorMessage}</span>
+              </div>
+            ) : null}
+
+            {/* Transcripts List */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {transcripts.length === 0 ? (
+                <div className="text-center text-slate-500 text-xs py-10 flex flex-col items-center gap-2">
+                  <Mic className="w-8 h-8 text-slate-600 stroke-[1.5]" />
+                  <p className="font-semibold text-slate-400">No speech detected yet</p>
+                  <p className="text-[11px] text-slate-500 max-w-xs leading-relaxed">
+                    Speak into your microphone while unmuted to see live speech-to-text transcripts (Whisper) and vocal tone cues (SpeechBrain).
+                  </p>
+                </div>
+              ) : (
+                transcripts.map((t) => {
+                  const vocalInfo = getVocalEmotionBadge(t.vocal_emotion);
+                  return (
+                    <div key={t.id} className="p-3 bg-slate-950 border border-slate-800/80 rounded-xl space-y-1.5 shadow-sm">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-semibold text-indigo-300">{t.participant_name}</span>
+                          {t.language && (
+                            <span className="text-[9px] bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded font-mono uppercase">
+                              {t.language}
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-slate-500 font-mono text-[10px]">
+                          {new Date(t.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                        </span>
+                      </div>
+
+                      <p className="text-xs text-slate-200 leading-relaxed break-words font-sans">
+                        "{t.text}"
+                      </p>
+
+                      {vocalInfo && (
+                        <div className="pt-1.5 flex items-center justify-between border-t border-slate-900 text-[10px]">
+                          <span className="text-slate-500">Vocal Tone:</span>
+                          <span className={`px-2 py-0.5 rounded-md border font-medium flex items-center gap-1 ${vocalInfo.color}`}>
+                            <span>{vocalInfo.emoji}</span>
+                            <span className="capitalize">{vocalInfo.label}</span>
+                            <span className="font-mono text-[9px]">({Math.round((vocalInfo.confidence || 0) * 100)}%)</span>
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+              <div ref={transcriptBottomRef} />
+            </div>
+
+            {/* Vocal Emotions Overview Across Active Speakers */}
+            <div className="p-3 border-t border-slate-800 bg-slate-950/60">
+              <h4 className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                Active Speaker Vocal Tones
+              </h4>
+              <div className="space-y-1.5 max-h-36 overflow-y-auto">
+                {Object.keys(participantVocalEmotions).length === 0 ? (
+                  <span className="text-slate-500 text-[11px] italic">Awaiting speech audio...</span>
+                ) : (
+                  Object.entries(participantVocalEmotions).map(([identity, vocal]) => {
+                    const matchedP = participants.find((p) => p.identity === identity);
+                    const name = matchedP?.name || identity;
+                    const info = getVocalEmotionBadge(vocal);
+                    return (
+                      <div key={identity} className="flex items-center justify-between text-xs py-1 px-2.5 rounded-lg bg-slate-900 border border-slate-800">
+                        <span className="text-slate-300 font-medium truncate max-w-[120px]">{name}</span>
+                        {info && (
+                          <span className={`px-2 py-0.5 rounded text-[10px] border flex items-center gap-1 ${info.color}`}>
+                            <span>{info.emoji}</span>
+                            <span className="capitalize">{info.label}</span>
+                            <span className="font-mono">({Math.round((info.confidence || 0) * 100)}%)</span>
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            {/* Drawer Actions */}
+            <div className="p-2.5 border-t border-slate-800 bg-slate-950/80 flex items-center justify-between gap-2">
+              <span className="text-[10px] text-slate-500">
+                Whisper base + SpeechBrain IEMOCAP
+              </span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={handleBenchmarkSpeechTest}
+                  disabled={isProcessingSpeech}
+                  className="px-2 py-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 border border-slate-700 rounded-lg text-[10px] font-medium transition-colors"
+                  title="Test backend with verified real human speech benchmark file"
+                >
+                  Benchmark Test
+                </button>
+                <button
+                  onClick={handleTestSpeechSample}
+                  disabled={isProcessingSpeech}
+                  className="px-2.5 py-1 bg-indigo-600/80 hover:bg-indigo-600 disabled:opacity-50 text-white rounded-lg text-[10px] font-medium transition-colors"
+                  title="Immediately record 2.5s from live mic and test transcription & vocal emotion"
+                >
+                  {isProcessingSpeech ? 'Testing...' : 'Test Live Mic (2.5s)'}
+                </button>
+              </div>
+            </div>
+          </aside>
+        )}
       </div>
 
       {/* 3. BOTTOM CONTROL BAR */}
@@ -874,11 +1758,32 @@ const ClassroomInner: React.FC<ClassroomInnerProps> = ({ joinData, classroom, se
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Speech & Audio Drawer Toggle */}
+          <button
+            onClick={() => {
+              setShowSpeechPanel(!showSpeechPanel);
+              if (showParticipants) setShowParticipants(false);
+              if (showChat) setShowChat(false);
+              audioRecorderRef.current?.resume();
+            }}
+            className={`px-4 py-2.5 rounded-xl font-medium text-xs flex items-center gap-2 transition-all relative ${
+              showSpeechPanel ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+            }`}
+            title="Toggle Live Audio & Speech Analysis (Whisper & SpeechBrain)"
+          >
+            <FileText className="w-4 h-4" />
+            <span>Speech & Audio</span>
+            {transcripts.length > 0 && (
+              <span className="w-2 h-2 rounded-full bg-indigo-400"></span>
+            )}
+          </button>
+
           {/* Participants Toggle */}
           <button
             onClick={() => {
               setShowParticipants(!showParticipants);
               if (showChat) setShowChat(false);
+              if (showSpeechPanel) setShowSpeechPanel(false);
             }}
             className={`px-4 py-2.5 rounded-xl font-medium text-xs flex items-center gap-2 transition-all ${
               showParticipants ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
@@ -893,6 +1798,7 @@ const ClassroomInner: React.FC<ClassroomInnerProps> = ({ joinData, classroom, se
             onClick={() => {
               setShowChat(!showChat);
               if (showParticipants) setShowParticipants(false);
+              if (showSpeechPanel) setShowSpeechPanel(false);
             }}
             className={`px-4 py-2.5 rounded-xl font-medium text-xs flex items-center gap-2 transition-all ${
               showChat ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
@@ -937,9 +1843,16 @@ const ClassroomInner: React.FC<ClassroomInnerProps> = ({ joinData, classroom, se
 };
 
 // PARTICIPANT VIDEO TILE COMPONENT
-const ParticipantTile: React.FC<{ participant: Participant; compact?: boolean }> = ({
+const ParticipantTile: React.FC<{
+  participant: Participant;
+  compact?: boolean;
+  emotion?: EmotionPredictionItem | null;
+  vocalEmotion?: VocalEmotionResult | null;
+}> = ({
   participant,
   compact = false,
+  emotion,
+  vocalEmotion,
 }) => {
   const cameraPub = participant.getTrackPublication(Track.Source.Camera);
   const micPub = participant.getTrackPublication(Track.Source.Microphone);
@@ -964,8 +1877,11 @@ const ParticipantTile: React.FC<{ participant: Participant; compact?: boolean }>
   const displayName = participant.name || participant.identity;
   const initials = displayName ? displayName.substring(0, 2).toUpperCase() : 'P';
 
+  const vocalInfo = getVocalEmotionBadge(vocalEmotion);
+
   return (
     <div
+      data-lk-local-participant={participant.isLocal ? 'true' : 'false'}
       className={`relative bg-slate-900 border rounded-2xl overflow-hidden flex flex-col items-center justify-center shadow-lg transition-all ${
         isSpeaking ? 'border-emerald-500 ring-2 ring-emerald-500/30' : 'border-slate-800'
       } ${compact ? 'w-44 h-full shrink-0' : 'w-full h-full'}`}
@@ -982,6 +1898,59 @@ const ParticipantTile: React.FC<{ participant: Participant; compact?: boolean }>
           {!compact && (
             <span className="text-sm font-semibold text-slate-300">{displayName}</span>
           )}
+        </div>
+      )}
+
+      {/* Real-time Visible Facial Emotion Badge (Phase 3C EmotiEffLib) */}
+      {emotion && emotion.expression ? (
+        emotion.expression === 'Face not detected' ? (
+          <div
+            className="absolute top-3 right-3 bg-slate-950/85 backdrop-blur-md px-2.5 py-1 rounded-xl border border-amber-500/30 text-xs font-medium text-amber-200 flex items-center gap-1.5 shadow z-10 pointer-events-auto"
+            title="No clear face detected in the current camera frame."
+          >
+            <span>👤</span>
+            <span className="font-medium text-amber-300">Face not detected</span>
+          </div>
+        ) : emotion.expression === 'Emotion unavailable' ? (
+          <div
+            className="absolute top-3 right-3 bg-slate-950/85 backdrop-blur-md px-2.5 py-1 rounded-xl border border-rose-500/30 text-xs font-medium text-rose-200 flex items-center gap-1.5 shadow z-10 pointer-events-auto"
+            title="Facial expression recognition unavailable or failed to process."
+          >
+            <span>⚠️</span>
+            <span className="font-medium text-rose-300">Emotion unavailable</span>
+          </div>
+        ) : (
+          <div
+            className="absolute top-3 right-3 bg-slate-950/85 backdrop-blur-md px-2.5 py-1 rounded-xl border border-indigo-500/30 text-xs font-medium text-slate-200 flex items-center gap-1.5 shadow z-10 pointer-events-auto"
+            title={`Visible Expression: ${emotion.expression} (${Math.round(emotion.confidence * 100)}% confidence). Approximate visible indicator.`}
+          >
+            <span>{getEmotionEmoji(emotion.expression)}</span>
+            <span className="font-semibold text-white">{emotion.expression}</span>
+            <span className="text-[10px] text-indigo-300 font-mono">
+              {Math.round(emotion.confidence * 100)}%
+            </span>
+          </div>
+        )
+      ) : isCameraActive ? (
+        <div
+          className="absolute top-3 right-3 bg-slate-950/60 backdrop-blur-md px-2 py-0.5 rounded-xl border border-slate-800 text-[10px] text-slate-400 z-10 pointer-events-auto"
+          title="Facial expression recognition active. Awaiting verified sample."
+        >
+          <span>Analyzing...</span>
+        </div>
+      ) : null}
+
+      {/* Real-time Vocal Emotion Badge (Phase 4 SpeechBrain IEMOCAP) */}
+      {vocalInfo && (
+        <div
+          className={`absolute top-3 left-3 backdrop-blur-md px-2.5 py-1 rounded-xl border text-xs font-medium flex items-center gap-1.5 shadow z-10 pointer-events-auto ${vocalInfo.color}`}
+          title={`SpeechBrain Vocal Tone: ${vocalInfo.label} (${Math.round((vocalEmotion?.confidence || 0) * 100)}% acoustic confidence). Assistive acoustic indicator.`}
+        >
+          <span>{vocalInfo.emoji}</span>
+          <span className="font-semibold capitalize">{vocalInfo.label}</span>
+          <span className="text-[10px] opacity-80 font-mono">
+            {Math.round((vocalEmotion?.confidence || 0) * 100)}%
+          </span>
         </div>
       )}
 

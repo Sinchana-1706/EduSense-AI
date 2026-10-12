@@ -8,6 +8,7 @@ import { TopHeader } from '../components/TopHeader';
 import { QuickStats } from '../components/QuickStats';
 import { JoinClassModal } from '../components/JoinClassModal';
 import { FaceVerificationModal } from '../components/FaceVerificationModal';
+import { TeacherAttendanceModal } from '../components/TeacherAttendanceModal';
 import {
   Plus,
   Video,

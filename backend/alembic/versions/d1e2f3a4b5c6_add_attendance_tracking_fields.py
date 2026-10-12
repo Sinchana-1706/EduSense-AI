@@ -17,14 +17,15 @@ depends_on = None
 
 
 def upgrade():
-    op.alter_column('attendance_records', 'status', type_=sqla.String(50))
-    op.add_column('attendance_records', sqla.Column('first_verified_at', sqla.DateTime(timezone=True), nullable=True))
-    op.add_column('attendance_records', sqla.Column('last_verified_at', sqla.DateTime(timezone=True), nullable=True))
-    op.add_column('attendance_records', sqla.Column('verification_count', sqla.Integer(), server_default='0', nullable=False))
-    op.add_column('attendance_records', sqla.Column('presence_duration_seconds', sqla.Integer(), server_default='0', nullable=False))
-    op.add_column('attendance_records', sqla.Column('is_manually_corrected', sqla.Boolean(), server_default='false', nullable=False))
-    op.add_column('attendance_records', sqla.Column('corrected_by_id', postgresql.UUID(as_uuid=True), sqla.ForeignKey('users.id', ondelete='SET NULL'), nullable=True))
-    op.add_column('attendance_records', sqla.Column('correction_reason', sqla.Text(), nullable=True))
+    with op.batch_alter_table('attendance_records') as batch_op:
+        batch_op.alter_column('status', type_=sqla.String(50))
+        batch_op.add_column(sqla.Column('first_verified_at', sqla.DateTime(timezone=True), nullable=True))
+        batch_op.add_column(sqla.Column('last_verified_at', sqla.DateTime(timezone=True), nullable=True))
+        batch_op.add_column(sqla.Column('verification_count', sqla.Integer(), server_default='0', nullable=False))
+        batch_op.add_column(sqla.Column('presence_duration_seconds', sqla.Integer(), server_default='0', nullable=False))
+        batch_op.add_column(sqla.Column('is_manually_corrected', sqla.Boolean(), server_default='false', nullable=False))
+        batch_op.add_column(sqla.Column('corrected_by_id', sqla.Uuid(as_uuid=True), sqla.ForeignKey('users.id', ondelete='SET NULL', name='fk_attendance_records_corrected_by_id'), nullable=True))
+        batch_op.add_column(sqla.Column('correction_reason', sqla.Text(), nullable=True))
 
 
 def downgrade():

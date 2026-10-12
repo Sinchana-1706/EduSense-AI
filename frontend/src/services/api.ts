@@ -13,6 +13,8 @@ import type {
   AttendanceRecordResponse,
   StudentAttendanceSummaryResponse,
   TeacherAttendanceSummaryResponse,
+  EmotionDetectionResponse,
+  SpeechAnalysisResponse,
 } from '../types';
 
 const API_BASE_URL = 'http://localhost:8000/api';
@@ -264,6 +266,51 @@ export const attendanceApi = {
     return handleResponse<TeacherAttendanceSummaryResponse>(res);
   },
 };
+
+export const emotionApi = {
+  detectEmotion: async (image_base64: string, session_id?: string): Promise<EmotionDetectionResponse> => {
+    const res = await fetch(`${API_BASE_URL}/face/emotion`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ image_base64, session_id }),
+    });
+    return handleResponse<EmotionDetectionResponse>(res);
+  },
+
+  getAvailableModels: async (): Promise<{ models: string[]; current_model: string }> => {
+    const res = await fetch(`${API_BASE_URL}/face/emotion/models`, {
+      headers: getAuthHeaders(),
+    });
+    return handleResponse<{ models: string[]; current_model: string }>(res);
+  },
+};
+
+export const speechApi = {
+  analyzeSpeech: async (sessionId: string, audioBlob: Blob): Promise<SpeechAnalysisResponse> => {
+    const token = localStorage.getItem('edusense_token');
+    const formData = new FormData();
+    formData.append('session_id', sessionId);
+    formData.append('audio', audioBlob, 'chunk.wav');
+
+    const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
+
+    const res = await fetch(`${API_BASE_URL}/speech/analyze`, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+    return handleResponse<SpeechAnalysisResponse>(res);
+  },
+
+  getSpeechModels: async (): Promise<any> => {
+    const res = await fetch(`${API_BASE_URL}/speech/models`, {
+      headers: getAuthHeaders(),
+    });
+    return handleResponse<any>(res);
+  },
+};
+
+
 
 
 
